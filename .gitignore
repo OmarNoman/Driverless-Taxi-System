@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Node-RED local runtime state (not source content - regenerated per machine)
+node-red/.config.nodes.json
+node-red/.config.runtime.json
+node-red/.config.runtime.json.backup
+node-red/lib/
+node-red/flows_cred.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/

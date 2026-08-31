@@ -1,0 +1,12 @@
+{
+  "name": "driverless-taxi-node-red",
+  "version": "1.0.0",
+  "description": "Local Node-RED project simulating the driverless taxi IoT edge (Week 1-2 of the 1.2D Plan).",
+  "private": true,
+  "scripts": {
+    "start": "node-red -u ."
+  },
+  "dependencies": {
+    "node-red": "^3.1.0"
+  }
+}
