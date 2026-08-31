@@ -13,8 +13,8 @@ source of truth for scope, requirements, and the week-by-week build order. See:
 
 ## Status
 
-Weeks 1-4 done: edge simulation, data layer, and MQTT ingestion. **Week 5 (Telemetry
-microservice) is next.** See [`ROADMAP.md`](./ROADMAP.md).
+Weeks 1-5 done: edge simulation, data layer, MQTT ingestion, and the batching Telemetry
+microservice. **Week 6 (Dispatch microservice) is next.** See [`ROADMAP.md`](./ROADMAP.md).
 
 ## Project layout (grows week by week - see ROADMAP.md)
 
@@ -28,8 +28,9 @@ driverless-taxi-system/
 ├── db/                  PostgreSQL schema + MongoDB telemetry validation - Week 3
 ├── broker/              Mosquitto config - Week 4
 └── services/
-    └── event-router/    validates the MQTT telemetry stream - Week 4
-                         (telemetry-service, dispatch-service come in Weeks 5-6)
+    ├── event-router/       validates the MQTT telemetry stream - Week 4
+    └── telemetry-service/   batches the validated stream into MongoDB - Week 5
+                             (dispatch-service comes in Week 6)
 ```
 
 ## Running it locally
@@ -52,17 +53,19 @@ The Node-RED admin UI is at http://127.0.0.1:1880/. Flows live in
 `node-red/flows.json` (not the global `~/.node-red`), so the simulation is
 version-controlled with the rest of the code.
 
-Start the Event Router:
+Start the Event Router, then the Telemetry service (each in its own terminal):
 
 ```
-cd services/event-router
-npm install
-npm start
+cd services/event-router && npm install && npm start
 ```
 
-See [`db/README.md`](./db/README.md) and
-[`services/event-router/README.md`](./services/event-router/README.md) for details and
-checks.
+```
+cd services/telemetry-service && npm install && npm start
+```
+
+Each component has its own README with details and checks:
+[`db/`](./db/README.md), [`event-router/`](./services/event-router/README.md),
+[`telemetry-service/`](./services/telemetry-service/README.md).
 
 ## Version control
 

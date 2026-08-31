@@ -5,6 +5,9 @@
     "additionalProperties": false,
     "required": ["vehicleID", "coordinates", "speed", "batteryLevel", "currentState", "timestamp"],
     "properties": {
+        "_id": {
+            "description": "allowed so the MongoDB validator accepts the auto-generated key under additionalProperties:false; never present on an inbound MQTT payload"
+        },
         "vehicleID": {
             "type": "string",
             "minLength": 1,

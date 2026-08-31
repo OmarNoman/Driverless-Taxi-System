@@ -1,0 +1,16 @@
+{
+    "name": "telemetry-service",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Week 5 - batches the validated telemetry stream and bulk-writes vehicle state into MongoDB.",
+    "type": "module",
+    "main": "src/index.js",
+    "scripts": {
+        "start": "node src/index.js",
+        "test": "node --test \"src/**/*.test.js\""
+    },
+    "dependencies": {
+        "mongodb": "^6.10.0",
+        "mqtt": "^5.10.1"
+    }
+}
