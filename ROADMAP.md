@@ -5,7 +5,7 @@ Traced directly to the 1.2D Plan's "Project Plan" section (week-by-week list) an
 started once the previous week's validation has passed. See `ARCHITECTURE.md` for the
 open decisions referenced below.
 
-## Week 1 — Architecture & Edge Setup
+## Week 1 - Architecture & Edge Setup
 
 - **Plan says (Project Plan, Week 1):** "Finalize the system design, initialize version
   control (GitHub), and configure the local Node-RED development environment."
@@ -17,17 +17,17 @@ open decisions referenced below.
   Node-RED instance.
 - **Validation:** `git log` shows the initial commit; `npm start` in `node-red/` brings
   up the Node-RED admin UI at `http://127.0.0.1:1880/`.
-- **Explicitly not doing yet:** no Node-RED flows, no services, no databases — those are
+- **Explicitly not doing yet:** no Node-RED flows, no services, no databases - those are
   later weeks' deliverables.
 
-## Week 2 — IoT Simulation
+## Week 2 - IoT Simulation
 
 - **Plan says (Project Plan, Week 2):** "Build the Node-RED flow to simulate the
   autonomous taxi fleet. Implement virtual sensors (GPS, battery) and actuators,
   ensuring the payload structure is optimized for MQTT transmission."
 - **Tasks:** Node-RED flow(s) simulating one or more taxis, generating GPS, battery,
   speedometer, and seat-weight sensor readings (union of the two sensor lists in the
-  Plan — see `ARCHITECTURE.md` open decision #4) on an interval; simulated actuators
+  Plan - see `ARCHITECTURE.md` open decision #4) on an interval; simulated actuators
   (motor controller, door lock) that react to an incoming command message; JSON payload
   shape matches what Telemetry/Dispatch will consume later (`vehicleID`, `coordinates`,
   `speed`, `batteryLevel`, `currentState`, `timestamp`). Apply the Plan's edge-level
@@ -38,11 +38,11 @@ open decisions referenced below.
 - **Validation:** Debug/inject nodes show correctly-shaped telemetry payloads being
   generated on an interval, and confirm the parked-vehicle filter suppresses unchanged
   readings.
-- **Explicitly not doing yet:** no live MQTT connection required this week — the broker
+- **Explicitly not doing yet:** no live MQTT connection required this week - the broker
   doesn't exist until Week 4, so payload generation is validated via Node-RED's own
   debug output, not an end-to-end publish.
 
-## Week 3 — Data Layer Implementation
+## Week 3 - Data Layer Implementation
 
 - **Plan says (Project Plan, Week 3):** "Provision the local development databases.
   Construct the relational schema in PostgreSQL for ride/user management and configure
@@ -57,15 +57,15 @@ open decisions referenced below.
   validation config.
 - **Validation:** schema applies cleanly to a fresh local Postgres database; a sample
   telemetry document validates against the Mongo schema.
-- **Explicitly not doing yet:** no MongoDB sharding, no PostgreSQL read replicas — both
+- **Explicitly not doing yet:** no MongoDB sharding, no PostgreSQL read replicas - both
   are explicitly out of scope per the Plan's own scalability discussion.
 
-## Week 4 — Ingestion & Messaging
+## Week 4 - Ingestion & Messaging
 
 - **Plan says (Project Plan, Week 4):** "Deploy the MQTT broker. Develop the initial
   Node.js Event Router to consume the raw vehicle telemetry stream and validate message
   payloads."
-- **Tasks:** stand up a local MQTT broker (default: Mosquitto — see `ARCHITECTURE.md`
+- **Tasks:** stand up a local MQTT broker (default: Mosquitto - see `ARCHITECTURE.md`
   open decision #1, needs confirmation); `services/event-router` Node.js service that
   subscribes to the vehicle telemetry topic(s), validates incoming payloads against the
   Week 3 Mongo schema shape, and rejects/logs malformed messages. Wire Week 2's Node-RED
@@ -79,16 +79,16 @@ open decisions referenced below.
   messages correctly rejected.
 - **Explicitly not doing yet:** no broker clustering/load balancing (out of scope, see
   `ARCHITECTURE.md`); the Event Router validates and passes messages on, it does not yet
-  write to a database — that's Week 5.
+  write to a database - that's Week 5.
 
-## Week 5 — Microservices: Telemetry
+## Week 5 - Microservices: Telemetry
 
 - **Plan says (Project Plan, Week 5):** "Develop the Node.js Telemetry microservice
   using asynchronous event loops. Implement the batching logic to efficiently write the
   filtered stream data into MongoDB."
 - **Tasks:** `services/telemetry-service` consumes validated events from the Event
   Router, batches state updates over a 5-second window (per the Plan), and performs bulk
-  inserts/upserts into MongoDB using the Week 3 schema. Fully asynchronous — the
+  inserts/upserts into MongoDB using the Week 3 schema. Fully asynchronous - the
   ingestion path must not block on DB I/O (per the Plan's Problem Description).
 - **Depends on:** Week 3 (Mongo schema), Week 4 (Event Router producing validated
   events).
@@ -100,7 +100,7 @@ open decisions referenced below.
 - **Explicitly not doing yet:** no dispatch logic (Week 6); no AWS/CloudWatch-based
   auto-scaling (Weeks 7-8).
 
-## Week 6 — Microservices: Dispatch
+## Week 6 - Microservices: Dispatch
 
 - **Plan says (Project Plan, Week 6):** "Develop the Node.js Dispatch microservice.
   Implement the routing algorithm to calculate the nearest available vehicle and send
@@ -110,7 +110,7 @@ open decisions referenced below.
   Haversine formula and the A* heuristic (per the Plan) to select the optimal vehicle;
   writes the resulting trip record to PostgreSQL; publishes a dispatch command to the
   vehicle's MQTT command topic. Per `ARCHITECTURE.md` open decision #3, the ride-request
-  call returns the assigned vehicle ID and ETA synchronously in its response — this is
+  call returns the assigned vehicle ID and ETA synchronously in its response - this is
   the only passenger-facing status mechanism built in Weeks 1-6, since nothing further
   is specified in this week's task.
 - **Depends on:** Week 3 (Postgres schema for trips/vehicles), Week 4 (broker to publish

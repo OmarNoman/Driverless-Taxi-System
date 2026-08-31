@@ -1,0 +1,289 @@
+[
+    {
+        "id": "a1d7e2f000000001",
+        "type": "tab",
+        "label": "Fleet Simulation",
+        "disabled": false,
+        "info": "Week 2 deliverable - Node-RED simulation of the driverless taxi fleet.\n\nTelemetry path: tick -> Fleet Sensor Simulator -> Edge Filter -> debug.\nActuator path: command inject -> Actuator Controller -> debug.\n\nNo MQTT connection in Week 2 (the broker is Week 4). Payloads are validated here via the debug sidebar. The MQTT out/in nodes get wired in at Week 4.",
+        "env": []
+    },
+    {
+        "id": "a1d7e2f000000002",
+        "type": "comment",
+        "z": "a1d7e2f000000001",
+        "name": "Telemetry simulation",
+        "info": "# Fleet Sensor Simulator\n\nSimulates 3 taxis. Each tick every vehicle produces a telemetry packet:\n\n```json\n{\n  \"vehicleID\": \"TAXI-001\",\n  \"coordinates\": { \"lat\": -37.813600, \"lon\": 144.963100 },\n  \"speed\": 34.21,\n  \"batteryLevel\": 87.4,\n  \"currentState\": \"driving\",\n  \"seatWeightKg\": 72.5,\n  \"timestamp\": 1725000000000\n}\n```\n\nTopic: `fleet/<vehicleID>/telemetry`. `timestamp` is Unix ms stamped at the edge (Plan risk mitigation for out-of-order packets). Adjust fleet size / interval in the tick inject and the simulator function.",
+        "x": 150,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "a1d7e2f000000003",
+        "type": "inject",
+        "z": "a1d7e2f000000001",
+        "name": "tick (1s)",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "1",
+        "crontab": "",
+        "once": true,
+        "onceDelay": 0.5,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 150,
+        "y": 120,
+        "wires": [
+            [
+                "a1d7e2f000000004"
+            ]
+        ]
+    },
+    {
+        "id": "a1d7e2f000000004",
+        "type": "function",
+        "z": "a1d7e2f000000001",
+        "name": "Fleet Sensor Simulator",
+        "func": "// Week 2 - Fleet Sensor Simulator\n// Plan (Project Plan, Week 2): virtual sensors GPS + battery + speedometer; Implementation\n// Plan adds a seat-weight sensor. This node advances a small in-memory fleet each tick and\n// emits one telemetry packet per vehicle. No MQTT yet - the broker is Week 4, so output\n// goes to the Edge Filter and then to debug only (see the comment node on this tab).\n\nconst FLEET_SIZE = 3;\nconst TICK_SECONDS = 1;\nconst ORIGIN = { lat: -37.8136, lon: 144.9631 }; // Melbourne CBD, for readable coordinates\n\nlet fleet = flow.get(\"fleet\");\nif (!fleet) {\n    fleet = [];\n    for (let i = 1; i <= FLEET_SIZE; i++) {\n        fleet.push({\n            vehicleID: \"TAXI-\" + String(i).padStart(3, \"0\"),\n            lat: ORIGIN.lat + (Math.random() - 0.5) * 0.02,\n            lon: ORIGIN.lon + (Math.random() - 0.5) * 0.02,\n            heading: Math.random() * 2 * Math.PI,\n            speed: 0,\n            batteryLevel: 80 + Math.random() * 20,\n            moving: i === 1,        // start one vehicle moving so both states show immediately\n            doorsLocked: true,\n            seatWeightKg: 0\n        });\n    }\n}\n\nconst now = Date.now();\nconst out = [];\n\nfor (const v of fleet) {\n    // occasionally flip between parked and driving so the Edge Filter has work to do\n    if (Math.random() < 0.15) v.moving = !v.moving;\n\n    if (v.moving) {\n        v.speed = 15 + Math.random() * 45;                         // speedometer, km/h\n        v.heading += (Math.random() - 0.5) * 0.6;                  // GPS module: gentle turns\n        const degPerTick = ((v.speed / 3600) * TICK_SECONDS) / 111; // ~111 km per degree\n        v.lat += Math.cos(v.heading) * degPerTick;\n        v.lon += Math.sin(v.heading) * degPerTick;\n        v.batteryLevel = Math.max(0, v.batteryLevel - 0.05);      // battery monitor: driving draw\n        v.seatWeightKg = 55 + Math.random() * 40;                  // seat-weight: passenger aboard\n        v.currentState = \"driving\";\n    } else {\n        v.speed = 0;\n        v.batteryLevel = Math.max(0, v.batteryLevel - 0.005);     // idle draw\n        v.seatWeightKg = 0;\n        v.currentState = \"parked\";\n    }\n\n    out.push({\n        topic: \"fleet/\" + v.vehicleID + \"/telemetry\",\n        payload: {\n            vehicleID: v.vehicleID,\n            coordinates: { lat: round(v.lat, 6), lon: round(v.lon, 6) },\n            speed: round(v.speed, 2),\n            batteryLevel: round(v.batteryLevel, 2),\n            currentState: v.currentState,\n            seatWeightKg: round(v.seatWeightKg, 2),\n            timestamp: now                                          // Unix ms, stamped at the edge\n        }\n    });\n}\n\nflow.set(\"fleet\", fleet);\nreturn [out];\n\nfunction round(n, dp) { const f = Math.pow(10, dp); return Math.round(n * f) / f; }\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 380,
+        "y": 120,
+        "wires": [
+            [
+                "a1d7e2f000000005"
+            ]
+        ]
+    },
+    {
+        "id": "a1d7e2f000000005",
+        "type": "function",
+        "z": "a1d7e2f000000001",
+        "name": "Edge Filter (parked + GPS delta < 0.0001)",
+        "func": "// Week 2 - Edge Filter\n// ROADMAP Week 2: \"drop a reading if parked and GPS delta < 0.0001 degrees\".\n// Keeps the last forwarded position per vehicle in flow context and compares against it.\n// Output 1: forwarded telemetry.  Output 2: suppressed packets (debug visibility only).\n\nconst GPS_EPSILON = 0.0001;\nconst p = msg.payload;\n\nconst lastSent = flow.get(\"lastSent\") || {};\nconst prev = lastSent[p.vehicleID];\n\nconst isParked = p.currentState === \"parked\";\nconst gpsUnchanged = !!prev\n    && Math.abs(p.coordinates.lat - prev.lat) < GPS_EPSILON\n    && Math.abs(p.coordinates.lon - prev.lon) < GPS_EPSILON;\n\nif (isParked && gpsUnchanged) {\n    msg.suppressedReason = \"parked and GPS delta < \" + GPS_EPSILON;\n    return [null, msg];\n}\n\nlastSent[p.vehicleID] = { lat: p.coordinates.lat, lon: p.coordinates.lon };\nflow.set(\"lastSent\", lastSent);\nreturn [msg, null];\n",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 680,
+        "y": 120,
+        "wires": [
+            [
+                "a1d7e2f000000006"
+            ],
+            [
+                "a1d7e2f000000007"
+            ]
+        ]
+    },
+    {
+        "id": "a1d7e2f000000006",
+        "type": "debug",
+        "z": "a1d7e2f000000001",
+        "name": "telemetry (forwarded)",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 960,
+        "y": 100,
+        "wires": []
+    },
+    {
+        "id": "a1d7e2f000000007",
+        "type": "debug",
+        "z": "a1d7e2f000000001",
+        "name": "telemetry (suppressed)",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 960,
+        "y": 160,
+        "wires": []
+    },
+    {
+        "id": "a1d7e2f000000008",
+        "type": "comment",
+        "z": "a1d7e2f000000001",
+        "name": "Actuator commands",
+        "info": "# Actuators\n\nSimulated motor controller + door lock. Inject a command `{ vehicleID, command }` where command is one of `dispatch`, `stop`, `lock_doors`, `unlock_doors`. The controller mutates the vehicle in flow context and emits an actuator response on `fleet/<vehicleID>/actuator`.",
+        "x": 150,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "a1d7e2f000000009",
+        "type": "inject",
+        "z": "a1d7e2f000000001",
+        "name": "cmd: dispatch TAXI-002",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "fleet/TAXI-002/command",
+        "payload": "{\"vehicleID\": \"TAXI-002\", \"command\": \"dispatch\"}",
+        "payloadType": "json",
+        "x": 170,
+        "y": 360,
+        "wires": [
+            [
+                "a1d7e2f00000000d"
+            ]
+        ]
+    },
+    {
+        "id": "a1d7e2f00000000a",
+        "type": "inject",
+        "z": "a1d7e2f000000001",
+        "name": "cmd: stop TAXI-002",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "fleet/TAXI-002/command",
+        "payload": "{\"vehicleID\": \"TAXI-002\", \"command\": \"stop\"}",
+        "payloadType": "json",
+        "x": 170,
+        "y": 420,
+        "wires": [
+            [
+                "a1d7e2f00000000d"
+            ]
+        ]
+    },
+    {
+        "id": "a1d7e2f00000000b",
+        "type": "inject",
+        "z": "a1d7e2f000000001",
+        "name": "cmd: lock_doors TAXI-002",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "fleet/TAXI-002/command",
+        "payload": "{\"vehicleID\": \"TAXI-002\", \"command\": \"lock_doors\"}",
+        "payloadType": "json",
+        "x": 170,
+        "y": 480,
+        "wires": [
+            [
+                "a1d7e2f00000000d"
+            ]
+        ]
+    },
+    {
+        "id": "a1d7e2f00000000c",
+        "type": "inject",
+        "z": "a1d7e2f000000001",
+        "name": "cmd: unlock_doors TAXI-002",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "fleet/TAXI-002/command",
+        "payload": "{\"vehicleID\": \"TAXI-002\", \"command\": \"unlock_doors\"}",
+        "payloadType": "json",
+        "x": 170,
+        "y": 540,
+        "wires": [
+            [
+                "a1d7e2f00000000d"
+            ]
+        ]
+    },
+    {
+        "id": "a1d7e2f00000000d",
+        "type": "function",
+        "z": "a1d7e2f000000001",
+        "name": "Actuator Controller",
+        "func": "// Week 2 - Actuator Controller\n// Plan (p3/p5): simulated motor controller + door lock that react to command messages.\n// Week 2: commands are injected by hand from this tab. From Week 6 they will arrive from the\n// Dispatch service over MQTT. Expected command payload: { vehicleID, command }.\n\nconst cmd = msg.payload || {};\nconst fleet = flow.get(\"fleet\") || [];\nconst v = fleet.find(x => x.vehicleID === cmd.vehicleID);\n\nif (!v) {\n    msg.topic = \"fleet/actuator/error\";\n    msg.payload = { error: \"unknown vehicleID\", received: cmd };\n    return msg;\n}\n\nlet action;\nswitch (cmd.command) {\n    case \"dispatch\":\n        v.moving = true;\n        action = \"motor controller engaged - vehicle dispatched\";\n        break;\n    case \"stop\":\n        v.moving = false;\n        v.speed = 0;\n        action = \"motor controller disengaged - vehicle stopped\";\n        break;\n    case \"lock_doors\":\n        v.doorsLocked = true;\n        action = \"door lock actuator - doors locked\";\n        break;\n    case \"unlock_doors\":\n        v.doorsLocked = false;\n        action = \"door lock actuator - doors unlocked\";\n        break;\n    default:\n        action = 'no actuator mapped for command \"' + cmd.command + '\"';\n}\n\nflow.set(\"fleet\", fleet);\nmsg.topic = \"fleet/\" + v.vehicleID + \"/actuator\";\nmsg.payload = {\n    vehicleID: v.vehicleID,\n    command: cmd.command,\n    action: action,\n    actuatorState: { moving: v.moving, doorsLocked: v.doorsLocked, speed: v.speed },\n    timestamp: Date.now()\n};\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 470,
+        "y": 450,
+        "wires": [
+            [
+                "a1d7e2f00000000e"
+            ]
+        ]
+    },
+    {
+        "id": "a1d7e2f00000000e",
+        "type": "debug",
+        "z": "a1d7e2f000000001",
+        "name": "actuator response",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 700,
+        "y": 450,
+        "wires": []
+    }
+]

@@ -1,4 +1,4 @@
-# Architecture — finalized design (Week 1)
+# Architecture - finalized design (Week 1)
 
 This document is the "finalize the system design" deliverable for Week 1 of the 1.2D
 Plan. It restates the confirmed architecture from the plan in implementation terms, and
@@ -26,7 +26,7 @@ resolutions to the plan's open questions once they're made.
 - **Storage:** MongoDB for high-throughput, schema-flexible telemetry (JSON documents:
   timestamp, vehicleID, coordinates, speed, battery level, current state); PostgreSQL for
   transactional/relational data (user accounts, ride histories, billing, static fleet
-  info) — chosen for ACID guarantees on ride bookings.
+  info) - chosen for ACID guarantees on ride bookings.
 - **Edge-level filtering:** a stationary vehicle whose GPS delta is < 0.0001° between
   readings has its telemetry packet dropped before it reaches the broker.
 - **Ordering/consistency:** every telemetry packet gets a Unix timestamp at the
@@ -37,25 +37,25 @@ resolutions to the plan's open questions once they're made.
 
 ## Explicitly out of scope for this build
 
-The Plan itself draws this line in its scalability discussion — restating it here so it
+The Plan itself draws this line in its scalability discussion - restating it here so it
 isn't accidentally implemented while chasing the breaking-point analysis:
 
-- **MongoDB sharding** — discussed only as a theoretical response to a 5,000-vehicle
+- **MongoDB sharding** - discussed only as a theoretical response to a 5,000-vehicle
   breaking point; not part of the working prototype.
-- **PostgreSQL read replicas** — same: theoretical future-scale mitigation, not built.
-- **Clustered MQTT broker behind a load balancer** — same: theoretical, not built.
+- **PostgreSQL read replicas** - same: theoretical future-scale mitigation, not built.
+- **Clustered MQTT broker behind a load balancer** - same: theoretical, not built.
 
 These stay as answers you can give if asked "how would this scale further," not as Week
 1-6 (or even Week 7-9) deliverables.
 
-## Open decisions (plan is ambiguous — flagging rather than assuming)
+## Open decisions (plan is ambiguous - flagging rather than assuming)
 
 1. **MQTT broker software.** The Plan says "MQTT broker" / "Messaging Broker" but never
    names a product. Proposed default for Week 4: **Mosquitto**, since it's the
    lightweight industry-standard choice and mirrors what would run in the eventual AWS
    deployment. Needs confirmation before Week 4 starts.
 2. **Week 7-8 compute target.** Implementation Plan says containers will be deployed via
-   "Amazon Elastic Container Service **or** EC2 Auto Scaling Groups" — an unresolved
+   "Amazon Elastic Container Service **or** EC2 Auto Scaling Groups" - an unresolved
    either/or. Doesn't block Weeks 1-6, but needs a decision before Week 7. Proposed
    default: ECS Fargate.
 3. **How commuters receive ride status updates.** The Solution Overview's stakeholder
@@ -67,7 +67,7 @@ These stay as answers you can give if asked "how would this scale further," not 
    speedometer. Implementation Plan adds a seat-weight sensor. Resolution: Week 2 will
    simulate the union of both (GPS, battery, speedometer, seat-weight).
 5. **Public-subnet ingestion wording.** Implementation Plan's cloud section says "an AWS
-   API Gateway and an MQTT will be exposed in the public subnet" — unclear phrasing.
+   API Gateway and an MQTT will be exposed in the public subnet" - unclear phrasing.
    Only affects Week 8 (AWS networking), not Weeks 1-6. Proposed default: API Gateway
    serves the passenger-facing REST API; the MQTT broker has its own TLS-secured public
    endpoint for vehicle connections.
