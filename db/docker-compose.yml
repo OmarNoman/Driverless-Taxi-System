@@ -1,0 +1,49 @@
+# Week 3 - local development databases.
+# Postgres holds relational business data (ACID); MongoDB holds high-throughput telemetry.
+#
+#   docker compose -f db/docker-compose.yml up -d      start both, run init scripts on first boot
+#   docker compose -f db/docker-compose.yml down       stop, keep data
+#   docker compose -f db/docker-compose.yml down -v    stop, wipe data (re-runs init next time)
+#
+# Docker is used here only as a convenient local runtime for the two databases. The
+# containerisation deliverable for the Node.js services is Week 7, not this.
+
+name: driverless-taxi-db
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: dtx-postgres
+    environment:
+      POSTGRES_USER: dtx
+      POSTGRES_PASSWORD: dtx_dev_pw
+      POSTGRES_DB: driverless_taxi
+    ports:
+      - "5432:5432"
+    volumes:
+      - dtx-pg-data:/var/lib/postgresql/data
+      - ./postgres/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./postgres/seed-fleet.sql:/docker-entrypoint-initdb.d/02-seed-fleet.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dtx -d driverless_taxi"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo:
+    image: mongo:7
+    container_name: dtx-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - dtx-mongo-data:/data/db
+      - ./mongo/init-telemetry.js:/docker-entrypoint-initdb.d/01-init-telemetry.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  dtx-pg-data:
+  dtx-mongo-data:

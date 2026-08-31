@@ -1,0 +1,10 @@
+{
+    "$comment": "A well-formed telemetry document (one tick from the Week 2 simulator). Used to check the validator accepts a valid payload. Insert with: mongosh driverless_taxi --eval \"db.telemetry.insertOne(<this object, without $comment>)\"",
+    "vehicleID": "TAXI-001",
+    "coordinates": { "lat": -37.8136, "lon": 144.9631 },
+    "speed": 34.21,
+    "batteryLevel": 87.4,
+    "currentState": "driving",
+    "seatWeightKg": 72.5,
+    "timestamp": 1725000000000
+}
