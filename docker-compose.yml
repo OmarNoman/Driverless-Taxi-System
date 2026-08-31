@@ -1,0 +1,64 @@
+# Local development infrastructure for the driverless taxi system.
+#
+#   docker compose up -d          start postgres, mongo, mosquitto
+#   docker compose down           stop, keep data
+#   docker compose down -v        stop, wipe data (init scripts re-run on next start)
+#
+# Docker is only a local runtime convenience here. Containerising the Node.js services and
+# deploying to AWS are Weeks 7-8, not this.
+
+name: driverless-taxi
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: dtx-postgres
+    environment:
+      POSTGRES_USER: dtx
+      POSTGRES_PASSWORD: dtx_dev_pw
+      POSTGRES_DB: driverless_taxi
+    ports:
+      - "5432:5432"
+    volumes:
+      - dtx-pg-data:/var/lib/postgresql/data
+      - ./db/postgres/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./db/postgres/seed-fleet.sql:/docker-entrypoint-initdb.d/02-seed-fleet.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dtx -d driverless_taxi"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo:
+    image: mongo:7
+    container_name: dtx-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - dtx-mongo-data:/data/db
+      - ./db/mongo/init-telemetry.sh:/docker-entrypoint-initdb.d/01-init-telemetry.sh:ro
+      - ./schema/telemetry.schema.json:/schema/telemetry.schema.json:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: dtx-mosquitto
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./broker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - dtx-mosquitto-data:/mosquitto/data
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok -q 0"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  dtx-pg-data:
+  dtx-mongo-data:
+  dtx-mosquitto-data:

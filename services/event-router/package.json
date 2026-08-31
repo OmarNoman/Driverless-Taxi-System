@@ -1,0 +1,16 @@
+{
+    "name": "event-router",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Week 4 - consumes the raw MQTT vehicle telemetry stream and validates message payloads.",
+    "type": "module",
+    "main": "src/index.js",
+    "scripts": {
+        "start": "node src/index.js",
+        "test": "node --test \"src/**/*.test.js\""
+    },
+    "dependencies": {
+        "ajv": "^8.17.1",
+        "mqtt": "^5.10.1"
+    }
+}

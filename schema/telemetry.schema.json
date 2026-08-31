@@ -1,0 +1,36 @@
+{
+    "title": "VehicleTelemetry",
+    "description": "One telemetry packet published by a simulated taxi on fleet/<vehicleID>/telemetry. Single source of truth for the payload shape: db/mongo/init-telemetry.sh applies it as the MongoDB $jsonSchema validator, and services/event-router loads it into Ajv. Uses only keywords both engines accept.",
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["vehicleID", "coordinates", "speed", "batteryLevel", "currentState", "timestamp"],
+    "properties": {
+        "vehicleID": {
+            "type": "string",
+            "minLength": 1,
+            "description": "vehicle identifier, e.g. 'TAXI-001'"
+        },
+        "coordinates": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["lat", "lon"],
+            "properties": {
+                "lat": { "type": "number", "minimum": -90, "maximum": 90 },
+                "lon": { "type": "number", "minimum": -180, "maximum": 180 }
+            }
+        },
+        "speed": { "type": "number", "minimum": 0, "description": "km/h" },
+        "batteryLevel": { "type": "number", "minimum": 0, "maximum": 100, "description": "percent" },
+        "currentState": { "enum": ["driving", "parked"] },
+        "seatWeightKg": {
+            "type": "number",
+            "minimum": 0,
+            "description": "optional - seat-weight sensor, the union of the plan's two sensor lists"
+        },
+        "timestamp": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Unix epoch milliseconds, stamped at the simulated edge"
+        }
+    }
+}

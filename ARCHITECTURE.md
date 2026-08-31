@@ -51,9 +51,11 @@ These stay as answers you can give if asked "how would this scale further," not 
 ## Open decisions (plan is ambiguous - flagging rather than assuming)
 
 1. **MQTT broker software.** The Plan says "MQTT broker" / "Messaging Broker" but never
-   names a product. Proposed default for Week 4: **Mosquitto**, since it's the
-   lightweight industry-standard choice and mirrors what would run in the eventual AWS
-   deployment. Needs confirmation before Week 4 starts.
+   names a product. **Resolved (Week 4): Eclipse Mosquitto**, chosen for being the
+   lightweight industry-standard broker and close to what would run in the eventual AWS
+   deployment. It runs locally as the `mosquitto` service in the repo-root
+   `docker-compose.yml`, on `localhost:1883` with anonymous access (TLS and auth are
+   Week 8 concerns).
 2. **Week 7-8 compute target.** Implementation Plan says containers will be deployed via
    "Amazon Elastic Container Service **or** EC2 Auto Scaling Groups" - an unresolved
    either/or. Doesn't block Weeks 1-6, but needs a decision before Week 7. Proposed
@@ -72,8 +74,9 @@ These stay as answers you can give if asked "how would this scale further," not 
    serves the passenger-facing REST API; the MQTT broker has its own TLS-secured public
    endpoint for vehicle connections.
 
-Items 2 and 5 don't block current work (Week 7-8 concerns). Items 1, 3, and 4 affect
-Weeks 2-6 and are proceeding under the proposed defaults above unless told otherwise.
+Item 1 is resolved (Week 4). Items 2 and 5 don't block current work (Week 7-8 concerns).
+Items 3 and 4 affect Weeks 2-6 and are proceeding under the defaults above unless told
+otherwise.
 
 ## Note on version control
 

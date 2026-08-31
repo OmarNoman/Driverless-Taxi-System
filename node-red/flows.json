@@ -4,7 +4,7 @@
         "type": "tab",
         "label": "Fleet Simulation",
         "disabled": false,
-        "info": "Week 2 deliverable - Node-RED simulation of the driverless taxi fleet.\n\nTelemetry path: tick -> Fleet Sensor Simulator -> Edge Filter -> debug.\nActuator path: command inject -> Actuator Controller -> debug.\n\nNo MQTT connection in Week 2 (the broker is Week 4). Payloads are validated here via the debug sidebar. The MQTT out/in nodes get wired in at Week 4.",
+        "info": "Node-RED simulation of the driverless taxi fleet (Weeks 2 and 4).\n\nTelemetry path: tick -> Fleet Sensor Simulator -> Edge Filter -> MQTT publish (fleet/<vehicleID>/telemetry) + debug.\nActuator path: manual command inject -> Actuator Controller -> debug.\n\nThe broker is Eclipse Mosquitto from the repo-root docker-compose.yml. The Week 4 Event Router subscribes to fleet/+/telemetry and validates every packet. Command delivery over MQTT is a Week 6 addition.",
         "env": []
     },
     {
@@ -51,7 +51,7 @@
         "type": "function",
         "z": "a1d7e2f000000001",
         "name": "Fleet Sensor Simulator",
-        "func": "// Week 2 - Fleet Sensor Simulator\n// Plan (Project Plan, Week 2): virtual sensors GPS + battery + speedometer; Implementation\n// Plan adds a seat-weight sensor. This node advances a small in-memory fleet each tick and\n// emits one telemetry packet per vehicle. No MQTT yet - the broker is Week 4, so output\n// goes to the Edge Filter and then to debug only (see the comment node on this tab).\n\nconst FLEET_SIZE = 3;\nconst TICK_SECONDS = 1;\nconst ORIGIN = { lat: -37.8136, lon: 144.9631 }; // Melbourne CBD, for readable coordinates\n\nlet fleet = flow.get(\"fleet\");\nif (!fleet) {\n    fleet = [];\n    for (let i = 1; i <= FLEET_SIZE; i++) {\n        fleet.push({\n            vehicleID: \"TAXI-\" + String(i).padStart(3, \"0\"),\n            lat: ORIGIN.lat + (Math.random() - 0.5) * 0.02,\n            lon: ORIGIN.lon + (Math.random() - 0.5) * 0.02,\n            heading: Math.random() * 2 * Math.PI,\n            speed: 0,\n            batteryLevel: 80 + Math.random() * 20,\n            moving: i === 1,        // start one vehicle moving so both states show immediately\n            doorsLocked: true,\n            seatWeightKg: 0\n        });\n    }\n}\n\nconst now = Date.now();\nconst out = [];\n\nfor (const v of fleet) {\n    // occasionally flip between parked and driving so the Edge Filter has work to do\n    if (Math.random() < 0.15) v.moving = !v.moving;\n\n    if (v.moving) {\n        v.speed = 15 + Math.random() * 45;                         // speedometer, km/h\n        v.heading += (Math.random() - 0.5) * 0.6;                  // GPS module: gentle turns\n        const degPerTick = ((v.speed / 3600) * TICK_SECONDS) / 111; // ~111 km per degree\n        v.lat += Math.cos(v.heading) * degPerTick;\n        v.lon += Math.sin(v.heading) * degPerTick;\n        v.batteryLevel = Math.max(0, v.batteryLevel - 0.05);      // battery monitor: driving draw\n        v.seatWeightKg = 55 + Math.random() * 40;                  // seat-weight: passenger aboard\n        v.currentState = \"driving\";\n    } else {\n        v.speed = 0;\n        v.batteryLevel = Math.max(0, v.batteryLevel - 0.005);     // idle draw\n        v.seatWeightKg = 0;\n        v.currentState = \"parked\";\n    }\n\n    out.push({\n        topic: \"fleet/\" + v.vehicleID + \"/telemetry\",\n        payload: {\n            vehicleID: v.vehicleID,\n            coordinates: { lat: round(v.lat, 6), lon: round(v.lon, 6) },\n            speed: round(v.speed, 2),\n            batteryLevel: round(v.batteryLevel, 2),\n            currentState: v.currentState,\n            seatWeightKg: round(v.seatWeightKg, 2),\n            timestamp: now                                          // Unix ms, stamped at the edge\n        }\n    });\n}\n\nflow.set(\"fleet\", fleet);\nreturn [out];\n\nfunction round(n, dp) { const f = Math.pow(10, dp); return Math.round(n * f) / f; }\n",
+        "func": "// Week 2 - Fleet Sensor Simulator\n// Plan (Project Plan, Week 2): virtual sensors GPS + battery + speedometer; Implementation\n// Plan adds a seat-weight sensor. This node advances a small in-memory fleet each tick and\n// emits one telemetry packet per vehicle, which the Edge Filter thins before it is\n// published to MQTT (topic fleet/<vehicleID>/telemetry) and shown on the debug sidebar.\n\nconst FLEET_SIZE = 3;\nconst TICK_SECONDS = 1;\nconst ORIGIN = { lat: -37.8136, lon: 144.9631 }; // Melbourne CBD, for readable coordinates\n\nlet fleet = flow.get(\"fleet\");\nif (!fleet) {\n    fleet = [];\n    for (let i = 1; i <= FLEET_SIZE; i++) {\n        fleet.push({\n            vehicleID: \"TAXI-\" + String(i).padStart(3, \"0\"),\n            lat: ORIGIN.lat + (Math.random() - 0.5) * 0.02,\n            lon: ORIGIN.lon + (Math.random() - 0.5) * 0.02,\n            heading: Math.random() * 2 * Math.PI,\n            speed: 0,\n            batteryLevel: 80 + Math.random() * 20,\n            moving: i === 1,        // start one vehicle moving so both states show immediately\n            doorsLocked: true,\n            seatWeightKg: 0\n        });\n    }\n}\n\nconst now = Date.now();\nconst out = [];\n\nfor (const v of fleet) {\n    // occasionally flip between parked and driving so the Edge Filter has work to do\n    if (Math.random() < 0.15) v.moving = !v.moving;\n\n    if (v.moving) {\n        v.speed = 15 + Math.random() * 45;                         // speedometer, km/h\n        v.heading += (Math.random() - 0.5) * 0.6;                  // GPS module: gentle turns\n        const degPerTick = ((v.speed / 3600) * TICK_SECONDS) / 111; // ~111 km per degree\n        v.lat += Math.cos(v.heading) * degPerTick;\n        v.lon += Math.sin(v.heading) * degPerTick;\n        v.batteryLevel = Math.max(0, v.batteryLevel - 0.05);      // battery monitor: driving draw\n        v.seatWeightKg = 55 + Math.random() * 40;                  // seat-weight: passenger aboard\n        v.currentState = \"driving\";\n    } else {\n        v.speed = 0;\n        v.batteryLevel = Math.max(0, v.batteryLevel - 0.005);     // idle draw\n        v.seatWeightKg = 0;\n        v.currentState = \"parked\";\n    }\n\n    out.push({\n        topic: \"fleet/\" + v.vehicleID + \"/telemetry\",\n        payload: {\n            vehicleID: v.vehicleID,\n            coordinates: { lat: round(v.lat, 6), lon: round(v.lon, 6) },\n            speed: round(v.speed, 2),\n            batteryLevel: round(v.batteryLevel, 2),\n            currentState: v.currentState,\n            seatWeightKg: round(v.seatWeightKg, 2),\n            timestamp: now                                          // Unix ms, stamped at the edge\n        }\n    });\n}\n\nflow.set(\"fleet\", fleet);\nreturn [out];\n\nfunction round(n, dp) { const f = Math.pow(10, dp); return Math.round(n * f) / f; }\n",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
@@ -82,7 +82,8 @@
         "y": 120,
         "wires": [
             [
-                "a1d7e2f000000006"
+                "a1d7e2f000000006",
+                "a1d7e2f000000010"
             ],
             [
                 "a1d7e2f000000007"
@@ -120,7 +121,35 @@
         "statusVal": "",
         "statusType": "auto",
         "x": 960,
-        "y": 160,
+        "y": 200,
+        "wires": []
+    },
+    {
+        "id": "a1d7e2f000000010",
+        "type": "mqtt out",
+        "z": "a1d7e2f000000001",
+        "name": "publish fleet/<id>/telemetry",
+        "topic": "",
+        "qos": "0",
+        "retain": "false",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "a1d7e2f00000000f",
+        "x": 970,
+        "y": 140,
+        "wires": []
+    },
+    {
+        "id": "a1d7e2f000000012",
+        "type": "comment",
+        "z": "a1d7e2f000000001",
+        "name": "MQTT broker",
+        "info": "# MQTT (Week 4)\n\nBroker: Eclipse Mosquitto on `localhost:1883` (repo-root `docker-compose.yml`).\n\nForwarded telemetry is published to `fleet/<vehicleID>/telemetry` (topic taken from `msg.topic`). The Event Router (`services/event-router`) consumes `fleet/+/telemetry`, validates each payload against `schema/telemetry.schema.json`, and re-publishes valid packets on `validated/<vehicleID>/telemetry` for the Week 5 Telemetry service.\n\nCommands still arrive from the manual inject nodes below. Subscribing to `fleet/+/command` over MQTT is wired in at Week 6, when the Dispatch service becomes the publisher.",
+        "x": 150,
+        "y": 300,
         "wires": []
     },
     {
@@ -128,9 +157,9 @@
         "type": "comment",
         "z": "a1d7e2f000000001",
         "name": "Actuator commands",
-        "info": "# Actuators\n\nSimulated motor controller + door lock. Inject a command `{ vehicleID, command }` where command is one of `dispatch`, `stop`, `lock_doors`, `unlock_doors`. The controller mutates the vehicle in flow context and emits an actuator response on `fleet/<vehicleID>/actuator`.",
+        "info": "# Actuators\n\nSimulated motor controller + door lock. Use the inject nodes to send a command `{ vehicleID, command }` where command is one of `dispatch`, `stop`, `lock_doors`, `unlock_doors`. The controller mutates the vehicle in flow context and emits an actuator response to the debug sidebar. (Week 6 adds an `mqtt in` on `fleet/+/command` so the Dispatch service can drive it.)",
         "x": 150,
-        "y": 300,
+        "y": 380,
         "wires": []
     },
     {
@@ -154,8 +183,8 @@
         "topic": "fleet/TAXI-002/command",
         "payload": "{\"vehicleID\": \"TAXI-002\", \"command\": \"dispatch\"}",
         "payloadType": "json",
-        "x": 170,
-        "y": 360,
+        "x": 190,
+        "y": 440,
         "wires": [
             [
                 "a1d7e2f00000000d"
@@ -183,8 +212,8 @@
         "topic": "fleet/TAXI-002/command",
         "payload": "{\"vehicleID\": \"TAXI-002\", \"command\": \"stop\"}",
         "payloadType": "json",
-        "x": 170,
-        "y": 420,
+        "x": 190,
+        "y": 500,
         "wires": [
             [
                 "a1d7e2f00000000d"
@@ -212,8 +241,8 @@
         "topic": "fleet/TAXI-002/command",
         "payload": "{\"vehicleID\": \"TAXI-002\", \"command\": \"lock_doors\"}",
         "payloadType": "json",
-        "x": 170,
-        "y": 480,
+        "x": 190,
+        "y": 560,
         "wires": [
             [
                 "a1d7e2f00000000d"
@@ -241,8 +270,8 @@
         "topic": "fleet/TAXI-002/command",
         "payload": "{\"vehicleID\": \"TAXI-002\", \"command\": \"unlock_doors\"}",
         "payloadType": "json",
-        "x": 170,
-        "y": 540,
+        "x": 190,
+        "y": 620,
         "wires": [
             [
                 "a1d7e2f00000000d"
@@ -254,15 +283,15 @@
         "type": "function",
         "z": "a1d7e2f000000001",
         "name": "Actuator Controller",
-        "func": "// Week 2 - Actuator Controller\n// Plan (p3/p5): simulated motor controller + door lock that react to command messages.\n// Week 2: commands are injected by hand from this tab. From Week 6 they will arrive from the\n// Dispatch service over MQTT. Expected command payload: { vehicleID, command }.\n\nconst cmd = msg.payload || {};\nconst fleet = flow.get(\"fleet\") || [];\nconst v = fleet.find(x => x.vehicleID === cmd.vehicleID);\n\nif (!v) {\n    msg.topic = \"fleet/actuator/error\";\n    msg.payload = { error: \"unknown vehicleID\", received: cmd };\n    return msg;\n}\n\nlet action;\nswitch (cmd.command) {\n    case \"dispatch\":\n        v.moving = true;\n        action = \"motor controller engaged - vehicle dispatched\";\n        break;\n    case \"stop\":\n        v.moving = false;\n        v.speed = 0;\n        action = \"motor controller disengaged - vehicle stopped\";\n        break;\n    case \"lock_doors\":\n        v.doorsLocked = true;\n        action = \"door lock actuator - doors locked\";\n        break;\n    case \"unlock_doors\":\n        v.doorsLocked = false;\n        action = \"door lock actuator - doors unlocked\";\n        break;\n    default:\n        action = 'no actuator mapped for command \"' + cmd.command + '\"';\n}\n\nflow.set(\"fleet\", fleet);\nmsg.topic = \"fleet/\" + v.vehicleID + \"/actuator\";\nmsg.payload = {\n    vehicleID: v.vehicleID,\n    command: cmd.command,\n    action: action,\n    actuatorState: { moving: v.moving, doorsLocked: v.doorsLocked, speed: v.speed },\n    timestamp: Date.now()\n};\nreturn msg;\n",
+        "func": "// Week 2 - Actuator Controller\n// Plan (p3/p5): simulated motor controller + door lock that react to command messages.\n// Commands come from the manual inject nodes on this tab. From Week 6 the Dispatch service\n// will publish them to fleet/<vehicleID>/command over MQTT and this node will subscribe.\n// Expected command payload: { vehicleID, command }.\n\nconst cmd = msg.payload || {};\nconst fleet = flow.get(\"fleet\") || [];\nconst v = fleet.find(x => x.vehicleID === cmd.vehicleID);\n\nif (!v) {\n    msg.topic = \"fleet/actuator/error\";\n    msg.payload = { error: \"unknown vehicleID\", received: cmd };\n    return msg;\n}\n\nlet action;\nswitch (cmd.command) {\n    case \"dispatch\":\n        v.moving = true;\n        action = \"motor controller engaged - vehicle dispatched\";\n        break;\n    case \"stop\":\n        v.moving = false;\n        v.speed = 0;\n        action = \"motor controller disengaged - vehicle stopped\";\n        break;\n    case \"lock_doors\":\n        v.doorsLocked = true;\n        action = \"door lock actuator - doors locked\";\n        break;\n    case \"unlock_doors\":\n        v.doorsLocked = false;\n        action = \"door lock actuator - doors unlocked\";\n        break;\n    default:\n        action = 'no actuator mapped for command \"' + cmd.command + '\"';\n}\n\nflow.set(\"fleet\", fleet);\nmsg.topic = \"fleet/\" + v.vehicleID + \"/actuator\";\nmsg.payload = {\n    vehicleID: v.vehicleID,\n    command: cmd.command,\n    action: action,\n    actuatorState: { moving: v.moving, doorsLocked: v.doorsLocked, speed: v.speed },\n    timestamp: Date.now()\n};\nreturn msg;\n",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 470,
-        "y": 450,
+        "x": 490,
+        "y": 520,
         "wires": [
             [
                 "a1d7e2f00000000e"
@@ -282,8 +311,35 @@
         "targetType": "full",
         "statusVal": "",
         "statusType": "auto",
-        "x": 700,
-        "y": 450,
+        "x": 720,
+        "y": 520,
         "wires": []
+    },
+    {
+        "id": "a1d7e2f00000000f",
+        "type": "mqtt-broker",
+        "name": "local mosquitto",
+        "broker": "localhost",
+        "port": "1883",
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": "4",
+        "keepalive": "60",
+        "cleansession": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willPayload": "",
+        "willMsg": {},
+        "userProps": "",
+        "sessionExpiry": ""
     }
 ]
