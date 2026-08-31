@@ -13,8 +13,10 @@ source of truth for scope, requirements, and the week-by-week build order. See:
 
 ## Status
 
-Weeks 1-5 done: edge simulation, data layer, MQTT ingestion, and the batching Telemetry
-microservice. **Week 6 (Dispatch microservice) is next.** See [`ROADMAP.md`](./ROADMAP.md).
+Weeks 1-6 done: the full request-to-dispatch loop runs locally - edge simulation, data
+layer, MQTT ingestion, the batching Telemetry service, and the Dispatch service. Weeks
+7-9 (containerisation, AWS deployment + auto-scaling, load testing) are out of scope for
+this implementation pass. See [`ROADMAP.md`](./ROADMAP.md).
 
 ## Project layout (grows week by week - see ROADMAP.md)
 
@@ -29,8 +31,8 @@ driverless-taxi-system/
 ├── broker/              Mosquitto config - Week 4
 └── services/
     ├── event-router/       validates the MQTT telemetry stream - Week 4
-    └── telemetry-service/   batches the validated stream into MongoDB - Week 5
-                             (dispatch-service comes in Week 6)
+    ├── telemetry-service/   batches the validated stream into MongoDB - Week 5
+    └── dispatch-service/    ride requests -> nearest vehicle -> MQTT command - Week 6
 ```
 
 ## Running it locally
@@ -53,7 +55,7 @@ The Node-RED admin UI is at http://127.0.0.1:1880/. Flows live in
 `node-red/flows.json` (not the global `~/.node-red`), so the simulation is
 version-controlled with the rest of the code.
 
-Start the Event Router, then the Telemetry service (each in its own terminal):
+Start the services, each in its own terminal:
 
 ```
 cd services/event-router && npm install && npm start
@@ -63,9 +65,21 @@ cd services/event-router && npm install && npm start
 cd services/telemetry-service && npm install && npm start
 ```
 
+```
+cd services/dispatch-service && npm install && npm start
+```
+
+Then request a ride (the demo passenger has id 1):
+
+```
+curl -s -XPOST localhost:8080/rides -H 'content-type: application/json' \
+  -d '{"userId":1,"pickup":{"lat":-37.8140,"lon":144.9630},"dropoff":{"lat":-37.8000,"lon":144.9700}}'
+```
+
 Each component has its own README with details and checks:
 [`db/`](./db/README.md), [`event-router/`](./services/event-router/README.md),
-[`telemetry-service/`](./services/telemetry-service/README.md).
+[`telemetry-service/`](./services/telemetry-service/README.md),
+[`dispatch-service/`](./services/dispatch-service/README.md).
 
 ## Version control
 

@@ -62,9 +62,9 @@ These stay as answers you can give if asked "how would this scale further," not 
    default: ECS Fargate.
 3. **How commuters receive ride status updates.** The Solution Overview's stakeholder
    requirements promise commuters "real-time status updates," but no week's task and
-   neither diagram specifies the mechanism. Proposed default: the ride-request endpoint
-   (Week 6) returns the assigned vehicle ID and ETA synchronously in its HTTP response.
-   A live-push/polling mechanism beyond that is NOT in Weeks 1-6 scope unless confirmed.
+   neither diagram specifies the mechanism. **Resolved (Week 6): synchronous only.** The
+   `POST /rides` endpoint returns the assigned vehicle ID and ETA in its HTTP response;
+   no live push or polling was built. A real-time channel would be future work.
 4. **Sensor list mismatch.** Solution Overview lists GPS, battery voltage monitor,
    speedometer. Implementation Plan adds a seat-weight sensor. Resolution: Week 2 will
    simulate the union of both (GPS, battery, speedometer, seat-weight).
@@ -74,9 +74,8 @@ These stay as answers you can give if asked "how would this scale further," not 
    serves the passenger-facing REST API; the MQTT broker has its own TLS-secured public
    endpoint for vehicle connections.
 
-Item 1 is resolved (Week 4). Items 2 and 5 don't block current work (Week 7-8 concerns).
-Items 3 and 4 affect Weeks 2-6 and are proceeding under the defaults above unless told
-otherwise.
+Items 1, 3 and 4 are resolved (Weeks 4, 6 and 2). Items 2 and 5 are Week 7-8 concerns and
+did not block the Weeks 1-6 implementation.
 
 ## Note on version control
 

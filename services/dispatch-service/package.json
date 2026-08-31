@@ -1,0 +1,17 @@
+{
+    "name": "dispatch-service",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Week 6 - ride-request entry point: picks the nearest available vehicle and dispatches it over MQTT.",
+    "type": "module",
+    "main": "src/index.js",
+    "scripts": {
+        "start": "node src/index.js",
+        "test": "node --test \"src/**/*.test.js\""
+    },
+    "dependencies": {
+        "mongodb": "^6.10.0",
+        "mqtt": "^5.10.1",
+        "pg": "^8.13.1"
+    }
+}

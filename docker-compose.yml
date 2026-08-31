@@ -23,6 +23,7 @@ services:
       - dtx-pg-data:/var/lib/postgresql/data
       - ./db/postgres/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
       - ./db/postgres/seed-fleet.sql:/docker-entrypoint-initdb.d/02-seed-fleet.sql:ro
+      - ./db/postgres/seed-dev.sql:/docker-entrypoint-initdb.d/03-seed-dev.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dtx -d driverless_taxi"]
       interval: 5s
