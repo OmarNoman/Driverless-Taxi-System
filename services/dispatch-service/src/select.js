@@ -1,57 +1,60 @@
-// Week 6 - vehicle selection.
+// Vehicle selection.
 //
-// Plan (p4): "make use of an A* search heuristic to determine the optimal vehicle dispatch
-// and the Haversine formula [...] to calculate the distances."
+// Plan (p4): "an A* search heuristic to determine the optimal vehicle dispatch and the
+// Haversine formula ... to calculate the distances."
 //
-// There is no road network in this project, so A* is applied as its cost model rather than
-// as graph search: each available vehicle is scored f(v) = g(v) + h(v), and the minimum is
-// chosen.
-//   h(v) = Haversine distance from the vehicle to the pickup  (admissible heuristic, km)
-//   g(v) = real-cost term, in km-equivalent penalties:
-//            + low / mid battery penalty   (a near-flat taxi is a poor choice)
-//            + moving penalty              (a parked taxi dispatches more cleanly)
+// With the real road graph, A* is graph search. For each capacity-eligible available
+// vehicle: snap its live position to the nearest node, run A* to the pickup node, and
+// score it
+//   score(v) = roadKm(v)              A* road distance the taxi must drive to the pickup
+//            + batteryPenaltyKm(v)    km-equivalent penalty for low battery / mid-charge
+//            + sizePenaltyKm(v)       gentle right-size preference (unused seats)
+// The lowest score wins. Capacity is a hard filter applied before this (see store.js).
 
 export const DEFAULTS = {
   lowBatteryPct: 20,
   lowBatteryPenaltyKm: 5,
   midBatteryPct: 40,
   midBatteryPenaltyKm: 2,
-  movingPenaltyKm: 1,
+  chargingPenaltyKm: 8,
+  oversizeKmPerSeat: 0.25,
 };
 
-const R_KM = 6371;
-const toRad = (deg) => (deg * Math.PI) / 180;
-
-export function haversineKm(a, b) {
-  const dLat = toRad(b.lat - a.lat);
-  const dLon = toRad(b.lon - a.lon);
-  const s =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R_KM * Math.asin(Math.sqrt(s));
-}
-
-function gCost(v, cfg) {
-  let g = 0;
-  if (v.batteryLevel < cfg.lowBatteryPct) g += cfg.lowBatteryPenaltyKm;
-  else if (v.batteryLevel < cfg.midBatteryPct) g += cfg.midBatteryPenaltyKm;
-  if (v.currentState === "driving") g += cfg.movingPenaltyKm;
-  return g;
-}
-
-// candidates: [{ vehicleId, lat, lon, batteryLevel, currentState }]
-// pickup:     { lat, lon }
-// returns the best { vehicleId, h, g, f, distanceKm, batteryLevel } or null
-export function selectVehicle(candidates, pickup, opts = {}) {
+// candidates: [{ vehicleId, vehicleType, seats, lat, lon, batteryLevel, currentState }]
+// returns the best { vehicleId, vehicleType, startNode, route:[nodeIds], roadKm,
+//                    batteryPenaltyKm, sizePenaltyKm, score } or null
+export function selectVehicle(candidates, pickupNodeId, graph, partySize = 1, opts = {}) {
   const cfg = { ...DEFAULTS, ...opts };
   let best = null;
-  for (const v of candidates) {
-    const h = haversineKm({ lat: v.lat, lon: v.lon }, pickup);
-    const g = gCost(v, cfg);
-    const f = g + h;
-    if (!best || f < best.f) {
-      best = { vehicleId: v.vehicleId, h, g, f, distanceKm: h, batteryLevel: v.batteryLevel };
+
+  for (const c of candidates) {
+    const startNode = graph.nearestNode({ lat: c.lat, lon: c.lon });
+    const path = graph.aStar(startNode, pickupNodeId);
+    if (!path) continue; // unreachable (should not happen on a connected graph)
+
+    const roadKm = path.costKm;
+
+    let batteryPenaltyKm = 0;
+    if (c.currentState === "charging") batteryPenaltyKm += cfg.chargingPenaltyKm;
+    if (c.batteryLevel < cfg.lowBatteryPct) batteryPenaltyKm += cfg.lowBatteryPenaltyKm;
+    else if (c.batteryLevel < cfg.midBatteryPct) batteryPenaltyKm += cfg.midBatteryPenaltyKm;
+
+    const sizePenaltyKm = Math.max(0, c.seats - partySize) * cfg.oversizeKmPerSeat;
+
+    const score = roadKm + batteryPenaltyKm + sizePenaltyKm;
+    if (!best || score < best.score) {
+      best = {
+        vehicleId: c.vehicleId,
+        vehicleType: c.vehicleType,
+        startNode,
+        route: path.path,
+        roadKm,
+        batteryPenaltyKm,
+        sizePenaltyKm,
+        score,
+      };
     }
   }
+
   return best;
 }

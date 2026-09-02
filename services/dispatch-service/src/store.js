@@ -1,8 +1,8 @@
-// Week 6 - data access for the Dispatch service.
+// Data access for the Dispatch service.
 //
 // PostgreSQL holds the fleet roster + trip records (ACID, per the plan); MongoDB holds the
-// live vehicle positions written by the Week 5 Telemetry service. A dispatch reads both,
-// then records the trip and flips the vehicle to on_trip in one transaction.
+// live vehicle positions written by the Telemetry service. A dispatch reads both, then
+// records the trip and flips the vehicle to on_trip in one transaction.
 
 import pg from "pg";
 import { MongoClient } from "mongodb";
@@ -31,19 +31,27 @@ export function createStore({ pgUrl, mongoUrl, mongoDb, mongoCollection = "telem
       return r.rowCount > 0;
     },
 
-    // vehicles marked available in Postgres, joined with their latest known position
-    async availableCandidates() {
-      const r = await pool.query("SELECT vehicle_id FROM vehicles WHERE status = 'available'");
-      const ids = r.rows.map((x) => x.vehicle_id);
-      if (ids.length === 0) return [];
+    // Available vehicles that can seat the party, joined with their latest known position.
+    // Capacity is a hard filter here; the rest of the scoring happens in select.js.
+    async availableCandidates(minSeats = 1) {
+      const r = await pool.query(
+        `SELECT vehicle_id, vehicle_type, passenger_seats
+           FROM vehicles
+          WHERE status = 'available' AND passenger_seats >= $1`,
+        [minSeats]
+      );
+      if (r.rows.length === 0) return [];
 
+      const meta = new Map(r.rows.map((x) => [x.vehicle_id, x]));
       const docs = await telemetry
-        .find({ vehicleID: { $in: ids } })
-        .project({ _id: 0, vehicleID: 1, coordinates: 1, batteryLevel: 1, currentState: 1 })
+        .find({ vehicleID: { $in: [...meta.keys()] } })
+        .project({ _id: 0, vehicleID: 1, vehicleType: 1, coordinates: 1, batteryLevel: 1, currentState: 1 })
         .toArray();
 
       return docs.map((d) => ({
         vehicleId: d.vehicleID,
+        vehicleType: d.vehicleType ?? meta.get(d.vehicleID).vehicle_type,
+        seats: meta.get(d.vehicleID).passenger_seats,
         lat: d.coordinates.lat,
         lon: d.coordinates.lon,
         batteryLevel: d.batteryLevel,

@@ -481,6 +481,14 @@ module.exports = {
      */
     functionGlobalContext: {
         // os:require('os'),
+        // Melbourne road-network graph, shared with services/dispatch-service.
+        // Function nodes read it via global.get("melbourneGraph").
+        melbourneGraph: JSON.parse(
+            require("fs").readFileSync(
+                require("path").join(__dirname, "..", "graph", "melbourne.json"),
+                "utf8"
+            )
+        ),
     },
 
     /** The maximum number of messages nodes will buffer internally as part of their

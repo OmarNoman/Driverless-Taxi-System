@@ -1,39 +1,138 @@
 {
     "title": "VehicleTelemetry",
-    "description": "One telemetry packet published by a simulated taxi on fleet/<vehicleID>/telemetry. Single source of truth for the payload shape: db/mongo/init-telemetry.sh applies it as the MongoDB $jsonSchema validator, and services/event-router loads it into Ajv. Uses only keywords both engines accept.",
+    "description": "One telemetry packet from a simulated taxi on fleet/<vehicleID>/telemetry. The payload shape depends on vehicleType: sedans and vans carry seat-level occupancy, buses carry a passenger count; each type carries the sensors it would realistically have. Single source of truth: db/mongo/init-telemetry.sh applies this as the MongoDB $jsonSchema validator on the telemetry collection, and services/event-router loads it into Ajv. Uses only keywords both engines accept (no if/then/else; enum, not const). The three branches repeat the common fields on purpose so each type is fully and strictly specified.",
     "type": "object",
-    "additionalProperties": false,
-    "required": ["vehicleID", "coordinates", "speed", "batteryLevel", "currentState", "timestamp"],
-    "properties": {
-        "_id": {
-            "description": "allowed so the MongoDB validator accepts the auto-generated key under additionalProperties:false; never present on an inbound MQTT payload"
-        },
-        "vehicleID": {
-            "type": "string",
-            "minLength": 1,
-            "description": "vehicle identifier, e.g. 'TAXI-001'"
-        },
-        "coordinates": {
+    "oneOf": [
+        {
+            "description": "sedan: robotaxi, up to 4 seats, one lock state",
             "type": "object",
             "additionalProperties": false,
-            "required": ["lat", "lon"],
+            "required": [
+                "vehicleID", "vehicleType", "coordinates", "heading", "speed",
+                "batteryLevel", "currentState", "timestamp", "occupancy", "doorsLocked"
+            ],
             "properties": {
-                "lat": { "type": "number", "minimum": -90, "maximum": 90 },
-                "lon": { "type": "number", "minimum": -180, "maximum": 180 }
+                "_id": {},
+                "vehicleID": { "type": "string", "minLength": 1 },
+                "vehicleType": { "enum": ["sedan"] },
+                "coordinates": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["lat", "lon"],
+                    "properties": {
+                        "lat": { "type": "number", "minimum": -90, "maximum": 90 },
+                        "lon": { "type": "number", "minimum": -180, "maximum": 180 }
+                    }
+                },
+                "heading": { "type": "number", "minimum": 0, "maximum": 360, "description": "degrees from north" },
+                "speed": { "type": "number", "minimum": 0, "description": "km/h" },
+                "batteryLevel": { "type": "number", "minimum": 0, "maximum": 100, "description": "percent" },
+                "currentState": { "enum": ["driving", "parked", "charging"] },
+                "timestamp": { "type": "number", "minimum": 0, "description": "Unix epoch milliseconds, stamped at the edge" },
+                "occupancy": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["seatsTotal", "seatsOccupied", "seatWeightKg"],
+                    "properties": {
+                        "seatsTotal": { "type": "number", "minimum": 1 },
+                        "seatsOccupied": { "type": "number", "minimum": 0 },
+                        "seatWeightKg": { "type": "number", "minimum": 0 }
+                    }
+                },
+                "doorsLocked": { "type": "boolean" }
             }
         },
-        "speed": { "type": "number", "minimum": 0, "description": "km/h" },
-        "batteryLevel": { "type": "number", "minimum": 0, "maximum": 100, "description": "percent" },
-        "currentState": { "enum": ["driving", "parked"] },
-        "seatWeightKg": {
-            "type": "number",
-            "minimum": 0,
-            "description": "optional - seat-weight sensor, the union of the plan's two sensor lists"
+        {
+            "description": "van: shared shuttle, ~7 seats, per-door state, rear cargo load cell",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "vehicleID", "vehicleType", "coordinates", "heading", "speed",
+                "batteryLevel", "currentState", "timestamp", "occupancy", "doorState", "cargoLoadKg"
+            ],
+            "properties": {
+                "_id": {},
+                "vehicleID": { "type": "string", "minLength": 1 },
+                "vehicleType": { "enum": ["van"] },
+                "coordinates": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["lat", "lon"],
+                    "properties": {
+                        "lat": { "type": "number", "minimum": -90, "maximum": 90 },
+                        "lon": { "type": "number", "minimum": -180, "maximum": 180 }
+                    }
+                },
+                "heading": { "type": "number", "minimum": 0, "maximum": 360 },
+                "speed": { "type": "number", "minimum": 0 },
+                "batteryLevel": { "type": "number", "minimum": 0, "maximum": 100 },
+                "currentState": { "enum": ["driving", "parked", "charging"] },
+                "timestamp": { "type": "number", "minimum": 0 },
+                "occupancy": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["seatsTotal", "seatsOccupied", "seatWeightKg"],
+                    "properties": {
+                        "seatsTotal": { "type": "number", "minimum": 1 },
+                        "seatsOccupied": { "type": "number", "minimum": 0 },
+                        "seatWeightKg": { "type": "number", "minimum": 0 }
+                    }
+                },
+                "doorState": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["front", "slidingLeft", "rear"],
+                    "properties": {
+                        "front": { "enum": ["open", "closed"] },
+                        "slidingLeft": { "enum": ["open", "closed"] },
+                        "rear": { "enum": ["open", "closed"] }
+                    }
+                },
+                "cargoLoadKg": { "type": "number", "minimum": 0 }
+            }
         },
-        "timestamp": {
-            "type": "number",
-            "minimum": 0,
-            "description": "Unix epoch milliseconds, stamped at the simulated edge"
+        {
+            "description": "bus: driverless shuttle bus, door people-counter, multiple doors, wheelchair ramp, fixed route",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "vehicleID", "vehicleType", "coordinates", "heading", "speed",
+                "batteryLevel", "currentState", "timestamp", "passengerCount",
+                "passengerCapacity", "doorState", "wheelchairRampDeployed", "nextStopId"
+            ],
+            "properties": {
+                "_id": {},
+                "vehicleID": { "type": "string", "minLength": 1 },
+                "vehicleType": { "enum": ["bus"] },
+                "coordinates": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["lat", "lon"],
+                    "properties": {
+                        "lat": { "type": "number", "minimum": -90, "maximum": 90 },
+                        "lon": { "type": "number", "minimum": -180, "maximum": 180 }
+                    }
+                },
+                "heading": { "type": "number", "minimum": 0, "maximum": 360 },
+                "speed": { "type": "number", "minimum": 0 },
+                "batteryLevel": { "type": "number", "minimum": 0, "maximum": 100 },
+                "currentState": { "enum": ["driving", "parked", "charging"] },
+                "timestamp": { "type": "number", "minimum": 0 },
+                "passengerCount": { "type": "number", "minimum": 0 },
+                "passengerCapacity": { "type": "number", "minimum": 1 },
+                "doorState": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["front", "middle", "rear"],
+                    "properties": {
+                        "front": { "enum": ["open", "closed"] },
+                        "middle": { "enum": ["open", "closed"] },
+                        "rear": { "enum": ["open", "closed"] }
+                    }
+                },
+                "wheelchairRampDeployed": { "type": "boolean" },
+                "nextStopId": { "type": "number", "minimum": 0, "description": "id of the next node in graph/melbourne.json" }
+            }
         }
-    }
+    ]
 }

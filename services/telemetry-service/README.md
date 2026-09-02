@@ -1,19 +1,21 @@
-# telemetry-service (Week 5)
+# telemetry-service
 
-Consumes the Event Router's validated telemetry stream and persists current vehicle state
-into MongoDB in batches.
+Consumes the Event Router's validated telemetry stream and persists it into MongoDB in
+batches: current state per vehicle, plus an append-only history.
 
 ```
-validated/+/telemetry ──▶ telemetry-service ──▶ MongoDB  driverless_taxi.telemetry
-                              (5s window, bulk upsert, one doc per vehicle)
+validated/+/telemetry ──▶ telemetry-service ──┬─▶ telemetry          (5s, bulk upsert, one doc/vehicle, LWW)
+                                               └─▶ telemetry_history  (5s, insertMany, every packet, TTL-pruned)
 ```
 
-- The MQTT handler only writes to an in-memory `Map` (newest packet per vehicle), so
-  ingestion never blocks on database I/O.
-- Every `BATCH_MS` the buffer is flushed with a single `bulkWrite` of upserts.
-- Last-write-wins: the update pipeline only lets a field move forward when the incoming
-  edge `timestamp` is newer than the stored one, so out-of-order packets cannot regress
-  a vehicle's state (plan p6).
+- The MQTT handler only writes to in-memory buffers, so ingestion never blocks on
+  database I/O.
+- Every `BATCH_MS` both buffers flush. `telemetry` gets one `bulkWrite` of upserts (newest
+  packet per vehicle); a `$cond` on `timestamp` in the update pipeline means an
+  out-of-order packet can never regress a vehicle's state (plan p6).
+- `telemetry_history` gets an `insertMany` of every packet in the window, each stamped with
+  a server-set `ingestedAt` that the TTL index prunes on (see `db/mongo/init-telemetry.sh`,
+  `HISTORY_TTL_DAYS`).
 
 ## Run
 
@@ -26,14 +28,15 @@ npm install
 npm start
 ```
 
-| Env var            | Default                       | Purpose                        |
-|--------------------|-------------------------------|--------------------------------|
-| `MQTT_URL`         | `mqtt://localhost:1883`       | broker address                 |
-| `TOPIC_IN`         | `validated/+/telemetry`       | validated stream subscription  |
-| `MONGO_URL`        | `mongodb://localhost:27017`   | MongoDB address                |
-| `MONGO_DB`         | `driverless_taxi`             | database                       |
-| `MONGO_COLLECTION` | `telemetry`                   | collection                     |
-| `BATCH_MS`         | `5000`                        | batching window in ms          |
+| Env var            | Default                     | Purpose                        |
+|--------------------|-----------------------------|--------------------------------|
+| `MQTT_URL`         | `mqtt://localhost:1883`     | broker address                 |
+| `TOPIC_IN`         | `validated/+/telemetry`     | validated stream subscription  |
+| `MONGO_URL`        | `mongodb://localhost:27017` | MongoDB address                |
+| `MONGO_DB`         | `driverless_taxi`           | database                       |
+| `MONGO_COLLECTION` | `telemetry`                 | current-state collection       |
+| `MONGO_HISTORY`    | `telemetry_history`         | append-only history collection |
+| `BATCH_MS`         | `5000`                      | batching window in ms          |
 
 ## Test
 
@@ -41,12 +44,13 @@ npm start
 npm test
 ```
 
-Unit tests for the batcher (newest-per-vehicle buffering, one bulk op per vehicle,
-empty-flush no-op, last-write-wins upsert shape, failed-flush recovery). No broker or
-database required.
+Batcher unit tests: newest-per-vehicle buffering, history keeps every packet, both buffers
+cleared on flush, empty-flush no-op, dynamic field set per vehicle type, last-write-wins
+upsert shape, failed-flush recovery. No broker or database required.
 
 ## Check the data
 
 ```bash
-docker exec dtx-mongo mongosh driverless_taxi --quiet --eval "db.telemetry.find({}, {vehicleID:1, currentState:1, timestamp:1, _id:0}).toArray()"
+docker exec dtx-mongo mongosh driverless_taxi --quiet --eval "db.telemetry.find({}, {vehicleID:1, vehicleType:1, currentState:1, _id:0}).toArray()"
+docker exec dtx-mongo mongosh driverless_taxi --quiet --eval "db.telemetry_history.countDocuments()"
 ```

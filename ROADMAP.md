@@ -5,6 +5,17 @@ Traced directly to the 1.2D Plan's "Project Plan" section (week-by-week list) an
 started once the previous week's validation has passed. See `ARCHITECTURE.md` for the
 open decisions referenced below.
 
+> **Post-review revision.** After Weeks 1-6 were complete a review against the plan led to
+> four changes, applied across the already-built weeks (see `ARCHITECTURE.md` "Revisions
+> after the Weeks 1-6 review"):
+> - **D1** Week 5 also writes an append-only `telemetry_history` collection alongside the
+>   current-state `telemetry`.
+> - **D2** Week 2 emits per-vehicle-type payloads (sedan / van / bus); Week 3 schema and
+>   fleet seed updated to match; Week 6 filters candidates by passenger capacity.
+> - **D3** Week 6 dispatch runs A* over `graph/melbourne.json`; ride requests name pickup
+>   and dropoff nodes; the Week 2 simulator drives the returned node route.
+> - **D4** test framework stays `node --test` (rationale recorded in `ARCHITECTURE.md`).
+
 ## Week 1 - Architecture & Edge Setup
 
 - **Plan says (Project Plan, Week 1):** "Finalize the system design, initialize version

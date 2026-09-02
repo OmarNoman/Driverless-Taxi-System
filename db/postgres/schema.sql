@@ -15,6 +15,8 @@ BEGIN;
 -- vehicle_id is the same identifier the Node-RED simulator emits (e.g. 'TAXI-001').
 -- status is the dispatch-facing availability flag; live position and battery live in
 -- MongoDB telemetry, not here.
+-- home_node_id is the graph/melbourne.json node the vehicle idles at (or, for a bus, a
+-- node on its fixed loop). The Node-RED simulator uses the same values; keep them in sync.
 -- ---------------------------------------------------------------------------
 CREATE TABLE vehicles (
     vehicle_id      text PRIMARY KEY,
@@ -24,6 +26,7 @@ CREATE TABLE vehicles (
     registration    text NOT NULL UNIQUE,
     status          text NOT NULL DEFAULT 'available'
                         CHECK (status IN ('available', 'on_trip', 'charging', 'maintenance', 'offline')),
+    home_node_id    smallint NOT NULL CHECK (home_node_id BETWEEN 0 AND 20),
     commissioned_on date NOT NULL DEFAULT CURRENT_DATE
 );
 

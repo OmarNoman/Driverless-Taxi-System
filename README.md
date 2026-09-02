@@ -14,26 +14,32 @@ source of truth for scope, requirements, and the week-by-week build order. See:
 ## Status
 
 Weeks 1-6 done: the full request-to-dispatch loop runs locally - edge simulation, data
-layer, MQTT ingestion, the batching Telemetry service, and the Dispatch service. Weeks
-7-9 (containerisation, AWS deployment + auto-scaling, load testing) are out of scope for
-this implementation pass. See [`ROADMAP.md`](./ROADMAP.md).
+layer, MQTT ingestion, the batching Telemetry service, and the Dispatch service. A
+post-review revision added per-vehicle-type telemetry, an append-only telemetry history,
+and A* routing over a real Melbourne road graph (see `ARCHITECTURE.md`). Weeks 7-9
+(containerisation, AWS deployment + auto-scaling, load testing) are out of scope for this
+implementation pass. See [`ROADMAP.md`](./ROADMAP.md).
 
-## Project layout (grows week by week - see ROADMAP.md)
+## Project layout
 
 ```
 driverless-taxi-system/
-├── ARCHITECTURE.md      finalized design + open decisions
+├── ARCHITECTURE.md      finalized design + open decisions + post-review revisions
 ├── ROADMAP.md           Week 1-6 plan, traced to the 1.2D Plan
-├── docker-compose.yml   local infra: postgres, mongo, mosquitto (Weeks 3-4)
-├── schema/              telemetry.schema.json - shared payload contract
-├── node-red/            local Node-RED project (IoT edge simulation) - Weeks 1-2, 4
-├── db/                  PostgreSQL schema + MongoDB telemetry validation - Week 3
-├── broker/              Mosquitto config - Week 4
+├── docker-compose.yml   local infra: postgres, mongo, mosquitto
+├── schema/              telemetry.schema.json - shared per-vehicle-type payload contract
+├── graph/               melbourne.json - road network for A* dispatch + route following
+├── node-red/            local Node-RED project (IoT edge simulation)
+├── db/                  PostgreSQL schema + MongoDB init (telemetry + telemetry_history)
+├── broker/              Mosquitto config
 └── services/
-    ├── event-router/       validates the MQTT telemetry stream - Week 4
-    ├── telemetry-service/   batches the validated stream into MongoDB - Week 5
-    └── dispatch-service/    ride requests -> nearest vehicle -> MQTT command - Week 6
+    ├── event-router/       validates the MQTT telemetry stream
+    ├── telemetry-service/   batches the validated stream into MongoDB
+    └── dispatch-service/    ride requests -> A* nearest vehicle -> MQTT command
 ```
+
+The simulated fleet is one sedan (TAXI-001), one van (TAXI-002) and one bus (TAXI-003).
+Sedans and vans are dispatchable and drive graph routes; the bus runs a fixed loop.
 
 ## Running it locally
 
@@ -69,12 +75,16 @@ cd services/telemetry-service && npm install && npm start
 cd services/dispatch-service && npm install && npm start
 ```
 
-Then request a ride (the demo passenger has id 1):
+Then request a ride. Pickup and dropoff are named road-graph nodes (`GET /nodes` lists
+them); the demo passenger has id 1:
 
 ```
 curl -s -XPOST localhost:8080/rides -H 'content-type: application/json' \
-  -d '{"userId":1,"pickup":{"lat":-37.8140,"lon":144.9630},"dropoff":{"lat":-37.8000,"lon":144.9700}}'
+  -d '{"userId":1,"pickup":"Camberwell","dropoff":"St Kilda","passengers":2}'
 ```
+
+The response carries the assigned vehicle, ETA and the suburb route; the vehicle then
+drives that route on the Node-RED map.
 
 Each component has its own README with details and checks:
 [`db/`](./db/README.md), [`event-router/`](./services/event-router/README.md),

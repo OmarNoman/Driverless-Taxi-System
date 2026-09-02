@@ -33,6 +33,8 @@ services:
   mongo:
     image: mongo:7
     container_name: dtx-mongo
+    environment:
+      HISTORY_TTL_DAYS: "7"
     ports:
       - "27017:27017"
     volumes:

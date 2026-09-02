@@ -1,12 +1,14 @@
-// Week 5 - Telemetry microservice
+// Telemetry microservice
 //
 // Plan (Project Plan, Week 5): "Develop the Node.js Telemetry microservice using
 // asynchronous event loops. Implement the batching logic to efficiently write the filtered
 // stream data into MongoDB."
 //
-// Consumes the Event Router's validated stream (validated/+/telemetry), buffers the newest
-// packet per vehicle, and every BATCH_MS bulk-upserts current state into MongoDB. The MQTT
-// handler only touches an in-memory Map, so ingestion never blocks on database I/O.
+// Consumes the Event Router's validated stream (validated/+/telemetry). The MQTT handler
+// only touches in-memory buffers, so ingestion never blocks on database I/O. Every
+// BATCH_MS the buffers are flushed: the newest packet per vehicle is bulk-upserted into
+// `telemetry` (current state, last-write-wins), and every packet is appended to
+// `telemetry_history` (append-only, TTL-pruned).
 
 import mqtt from "mqtt";
 import { MongoClient } from "mongodb";
@@ -17,14 +19,20 @@ const TOPIC_IN = process.env.TOPIC_IN || "validated/+/telemetry";
 const MONGO_URL = process.env.MONGO_URL || "mongodb://localhost:27017";
 const MONGO_DB = process.env.MONGO_DB || "driverless_taxi";
 const MONGO_COLLECTION = process.env.MONGO_COLLECTION || "telemetry";
+const MONGO_HISTORY = process.env.MONGO_HISTORY || "telemetry_history";
 const BATCH_MS = Number(process.env.BATCH_MS || 5000);
 
 const mongo = new MongoClient(MONGO_URL);
 await mongo.connect();
-const collection = mongo.db(MONGO_DB).collection(MONGO_COLLECTION);
-console.log(`[telemetry] mongo ${MONGO_URL} db=${MONGO_DB} collection=${MONGO_COLLECTION}`);
+const db = mongo.db(MONGO_DB);
+const collection = db.collection(MONGO_COLLECTION);
+const historyCollection = db.collection(MONGO_HISTORY);
+console.log(
+  `[telemetry] mongo ${MONGO_URL} db=${MONGO_DB} ` +
+    `collections=${MONGO_COLLECTION},${MONGO_HISTORY}`
+);
 
-const batcher = new TelemetryBatcher({ collection, batchMs: BATCH_MS });
+const batcher = new TelemetryBatcher({ collection, historyCollection, batchMs: BATCH_MS });
 batcher.start();
 console.log(`[telemetry] batching window ${BATCH_MS}ms`);
 
@@ -63,7 +71,7 @@ const ticker = setInterval(() => {
   const s = batcher.stats;
   console.log(
     `[telemetry] stats received=${s.received} buffered=${batcher.buffer.size} ` +
-      `dropped=${s.dropped} flushes=${s.flushes} upserts=${s.upserts}`
+      `dropped=${s.dropped} flushes=${s.flushes} upserts=${s.upserts} history=${s.history}`
   );
 }, 10000);
 ticker.unref();

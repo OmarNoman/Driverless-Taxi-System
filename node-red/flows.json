@@ -4,7 +4,7 @@
         "type": "tab",
         "label": "Fleet Simulation",
         "disabled": false,
-        "info": "Node-RED simulation of the driverless taxi fleet (Weeks 2, 4 and 6).\n\nTelemetry path: tick -> Fleet Sensor Simulator -> Edge Filter -> MQTT publish (fleet/<vehicleID>/telemetry) + debug.\nActuator path: MQTT subscribe (fleet/+/command) or manual inject -> Actuator Controller -> debug.\n\nThe broker is Eclipse Mosquitto from the repo-root docker-compose.yml. The Event Router validates fleet/+/telemetry; the Week 6 Dispatch service publishes fleet/<vehicleID>/command.",
+        "info": "Node-RED simulation of the driverless taxi fleet.\n\nOne sedan (TAXI-001, home Melbourne CBD), one van (TAXI-002, home Sunshine), one bus (TAXI-003, fixed Boxhill-Camberwell-Burwood loop). Vehicles move along the graph/melbourne.json road network, loaded via settings.js functionGlobalContext.\n\nTelemetry path: tick -> Fleet Sensor Simulator (per-type payload) -> Edge Filter -> MQTT publish (fleet/<vehicleID>/telemetry) + debug.\nActuator path: MQTT subscribe (fleet/+/command) or manual inject -> Actuator Controller -> debug. A dispatch command carries a node-id route; the sedan or van drives it and parks at the pickup node.",
         "env": []
     },
     {
@@ -12,7 +12,7 @@
         "type": "comment",
         "z": "a1d7e2f000000001",
         "name": "Telemetry simulation",
-        "info": "# Fleet Sensor Simulator\n\nSimulates 3 taxis. Each tick every vehicle produces a telemetry packet:\n\n```json\n{\n  \"vehicleID\": \"TAXI-001\",\n  \"coordinates\": { \"lat\": -37.813600, \"lon\": 144.963100 },\n  \"speed\": 34.21,\n  \"batteryLevel\": 87.4,\n  \"currentState\": \"driving\",\n  \"seatWeightKg\": 72.5,\n  \"timestamp\": 1725000000000\n}\n```\n\nTopic: `fleet/<vehicleID>/telemetry`. `timestamp` is Unix ms stamped at the edge (Plan risk mitigation for out-of-order packets). Adjust fleet size / interval in the tick inject and the simulator function.",
+        "info": "# Fleet Sensor Simulator\n\nEach tick every vehicle emits a telemetry packet whose shape depends on `vehicleType` (see `schema/telemetry.schema.json`).\n\nCommon fields: `vehicleID`, `vehicleType`, `coordinates{lat,lon}`, `heading`, `speed`, `batteryLevel`, `currentState` (driving | parked | charging), `timestamp` (Unix ms, stamped at the edge).\n\n- **sedan**: `occupancy{seatsTotal,seatsOccupied,seatWeightKg}`, `doorsLocked`\n- **van**: `occupancy{...}`, `doorState{front,slidingLeft,rear}`, `cargoLoadKg`\n- **bus**: `passengerCount`, `passengerCapacity`, `doorState{front,middle,rear}`, `wheelchairRampDeployed`, `nextStopId`\n\nDispatchable vehicles (sedan, van) idle at their home node until a dispatch command gives them a node route. The bus runs its loop continuously.",
         "x": 150,
         "y": 40,
         "wires": []
@@ -51,7 +51,7 @@
         "type": "function",
         "z": "a1d7e2f000000001",
         "name": "Fleet Sensor Simulator",
-        "func": "// Week 2 - Fleet Sensor Simulator\n// Plan (Project Plan, Week 2): virtual sensors GPS + battery + speedometer; Implementation\n// Plan adds a seat-weight sensor. This node advances a small in-memory fleet each tick and\n// emits one telemetry packet per vehicle, which the Edge Filter thins before it is\n// published to MQTT (topic fleet/<vehicleID>/telemetry) and shown on the debug sidebar.\n\nconst FLEET_SIZE = 3;\nconst TICK_SECONDS = 1;\nconst ORIGIN = { lat: -37.8136, lon: 144.9631 }; // Melbourne CBD, for readable coordinates\n\nlet fleet = flow.get(\"fleet\");\nif (!fleet) {\n    fleet = [];\n    for (let i = 1; i <= FLEET_SIZE; i++) {\n        fleet.push({\n            vehicleID: \"TAXI-\" + String(i).padStart(3, \"0\"),\n            lat: ORIGIN.lat + (Math.random() - 0.5) * 0.02,\n            lon: ORIGIN.lon + (Math.random() - 0.5) * 0.02,\n            heading: Math.random() * 2 * Math.PI,\n            speed: 0,\n            batteryLevel: 80 + Math.random() * 20,\n            moving: i === 1,        // start one vehicle moving so both states show immediately\n            doorsLocked: true,\n            seatWeightKg: 0\n        });\n    }\n}\n\nconst now = Date.now();\nconst out = [];\n\nfor (const v of fleet) {\n    // occasionally flip between parked and driving so the Edge Filter has work to do\n    if (Math.random() < 0.15) v.moving = !v.moving;\n\n    if (v.moving) {\n        v.speed = 15 + Math.random() * 45;                         // speedometer, km/h\n        v.heading += (Math.random() - 0.5) * 0.6;                  // GPS module: gentle turns\n        const degPerTick = ((v.speed / 3600) * TICK_SECONDS) / 111; // ~111 km per degree\n        v.lat += Math.cos(v.heading) * degPerTick;\n        v.lon += Math.sin(v.heading) * degPerTick;\n        v.batteryLevel = Math.max(0, v.batteryLevel - 0.05);      // battery monitor: driving draw\n        v.seatWeightKg = 55 + Math.random() * 40;                  // seat-weight: passenger aboard\n        v.currentState = \"driving\";\n    } else {\n        v.speed = 0;\n        v.batteryLevel = Math.max(0, v.batteryLevel - 0.005);     // idle draw\n        v.seatWeightKg = 0;\n        v.currentState = \"parked\";\n    }\n\n    out.push({\n        topic: \"fleet/\" + v.vehicleID + \"/telemetry\",\n        payload: {\n            vehicleID: v.vehicleID,\n            coordinates: { lat: round(v.lat, 6), lon: round(v.lon, 6) },\n            speed: round(v.speed, 2),\n            batteryLevel: round(v.batteryLevel, 2),\n            currentState: v.currentState,\n            seatWeightKg: round(v.seatWeightKg, 2),\n            timestamp: now                                          // Unix ms, stamped at the edge\n        }\n    });\n}\n\nflow.set(\"fleet\", fleet);\nreturn [out];\n\nfunction round(n, dp) { const f = Math.pow(10, dp); return Math.round(n * f) / f; }\n",
+        "func": "// Fleet Sensor Simulator (revised: per-type payloads + graph route-following)\n//\n// Each dispatchable vehicle idles at its home node until a dispatch command gives it a\n// node route (the Actuator Controller sets v.route). It then interpolates along each\n// graph edge at road speed until the route is exhausted, and parks at the destination.\n// The bus ignores dispatch and runs a fixed loop of nodes. Payload fields depend on\n// vehicleType and match schema/telemetry.schema.json. The graph comes from\n// graph/melbourne.json via settings.js functionGlobalContext.\n\nconst G = global.get(\"melbourneGraph\");\nif (!G) {\n    node.error(\"melbourneGraph missing from global context - check node-red/settings.js\");\n    return null;\n}\n\nconst NODE = {};\nfor (const n of G.nodes) NODE[n.id] = n;\n\n// Simulation time scale: each real-time tick advances vehicles by TICK_S simulated\n// seconds. The reported `speed` stays a realistic km/h; only the position advance is\n// fast-forwarded, so a cross-suburb dispatch completes in about a minute of wall clock\n// instead of 20.\nconst TICK_S = 30;\nconst R_KM = 6371;\nconst rad = (d) => (d * Math.PI) / 180;\nconst rnd = (lo, hi) => lo + Math.random() * (hi - lo);\nconst round = (n, dp) => { const f = Math.pow(10, dp); return Math.round(n * f) / f; };\n\nfunction havKm(a, b) {\n    const dLa = rad(b.lat - a.lat), dLo = rad(b.lon - a.lon);\n    const s = Math.sin(dLa / 2) ** 2 +\n        Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLo / 2) ** 2;\n    return 2 * R_KM * Math.asin(Math.sqrt(s));\n}\nfunction bearing(a, b) {\n    const y = Math.sin(rad(b.lon - a.lon)) * Math.cos(rad(b.lat));\n    const x = Math.cos(rad(a.lat)) * Math.sin(rad(b.lat)) -\n        Math.sin(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.cos(rad(b.lon - a.lon));\n    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;\n}\n\nconst SPEED = { sedan: [40, 58], van: [35, 50], bus: [20, 34] };  // km/h band per type\n\nfunction mkVehicle(id, type, homeNode, busLoop) {\n    const h = NODE[homeNode];\n    return {\n        vehicleID: id, vehicleType: type, homeNode: homeNode,\n        nodeId: homeNode, route: [], edgeProgress: 0,\n        lat: h.lat, lon: h.lon, heading: 0, speed: 0,\n        batteryLevel: rnd(70, 100),\n        currentState: type === \"bus\" ? \"driving\" : \"parked\",\n        seatsOccupied: 0, doorsLocked: true, cargoLoadKg: 0,\n        passengerCount: type === \"bus\" ? Math.round(rnd(5, 25)) : 0,\n        rampDeployed: false,\n        busLoop: busLoop || null, busLoopIdx: 0\n    };\n}\n\nlet fleet = flow.get(\"fleet\");\nif (!fleet) {\n    fleet = [\n        mkVehicle(\"TAXI-001\", \"sedan\", 0, null),   // home Melbourne CBD\n        mkVehicle(\"TAXI-002\", \"van\", 18, null),     // home Sunshine\n        mkVehicle(\"TAXI-003\", \"bus\", 13, [13, 14, 16, 13])  // fixed loop Boxhill-Camberwell-Burwood\n    ];\n}\n\nconst now = Date.now();\nconst out = [];\n\nfor (const v of fleet) {\n    // bus: keep its route topped up from the loop, skipping a zero-length hop\n    if (v.vehicleType === \"bus\" && v.route.length === 0) {\n        v.busLoopIdx = (v.busLoopIdx + 1) % v.busLoop.length;\n        if (v.busLoop[v.busLoopIdx] === v.nodeId) {\n            v.busLoopIdx = (v.busLoopIdx + 1) % v.busLoop.length;\n        }\n        v.route = [v.busLoop[v.busLoopIdx]];\n    }\n\n    v.doorState = { front: \"closed\", middle: \"closed\", slidingLeft: \"closed\", rear: \"closed\" };\n    v.rampDeployed = false;\n    const driving = v.route.length > 0;\n\n    if (driving) {\n        v.currentState = \"driving\";\n        v.speed = round(rnd(SPEED[v.vehicleType][0], SPEED[v.vehicleType][1]), 1);\n        const from = NODE[v.nodeId], to = NODE[v.route[0]];\n        const edgeKm = Math.max(havKm(from, to), 0.001);\n        v.edgeProgress += ((v.speed / 3600) * TICK_S) / edgeKm;\n\n        if (v.edgeProgress >= 1) {\n            v.nodeId = v.route.shift();\n            v.edgeProgress = 0;\n            const at = NODE[v.nodeId];\n            v.lat = at.lat; v.lon = at.lon;\n            if (v.vehicleType === \"bus\") {\n                v.doorState.front = \"open\"; v.doorState.middle = \"open\";\n                v.passengerCount = Math.min(40, Math.max(0, v.passengerCount + Math.round(rnd(-6, 8))));\n                v.rampDeployed = Math.random() < 0.15;\n            }\n            if (v.route.length === 0 && v.vehicleType !== \"bus\") {\n                v.currentState = \"parked\"; v.speed = 0;   // arrived at the pickup node\n            } else {\n                const nxt = NODE[v.route.length ? v.route[0] : v.nodeId];\n                v.heading = round(bearing(at, nxt), 1);\n            }\n        } else {\n            v.lat = from.lat + (to.lat - from.lat) * v.edgeProgress;\n            v.lon = from.lon + (to.lon - from.lon) * v.edgeProgress;\n            v.heading = round(bearing(from, to), 1);\n        }\n        v.batteryLevel = Math.max(0, v.batteryLevel - (v.vehicleType === \"bus\" ? 0.06 : 0.05));\n    } else {\n        const at = NODE[v.nodeId];\n        v.lat = at.lat; v.lon = at.lon; v.speed = 0;\n        if (v.batteryLevel < 40) {\n            v.currentState = \"charging\";\n            v.batteryLevel = Math.min(100, v.batteryLevel + 0.3);\n        } else {\n            v.currentState = \"parked\";\n            v.batteryLevel = Math.max(0, v.batteryLevel - 0.003);\n        }\n        v.seatsOccupied = 0; v.cargoLoadKg = 0;\n    }\n\n    out.push({ topic: \"fleet/\" + v.vehicleID + \"/telemetry\", payload: buildPayload(v, now) });\n}\n\nflow.set(\"fleet\", fleet);\nreturn [out];\n\nfunction occ(v, seatsTotal) {\n    return {\n        seatsTotal: seatsTotal,\n        seatsOccupied: v.seatsOccupied,\n        seatWeightKg: round(v.seatsOccupied * rnd(62, 82), 1)\n    };\n}\n\nfunction buildPayload(v, ts) {\n    const p = {\n        vehicleID: v.vehicleID,\n        vehicleType: v.vehicleType,\n        coordinates: { lat: round(v.lat, 6), lon: round(v.lon, 6) },\n        heading: round(v.heading, 1),\n        speed: round(v.speed, 2),\n        batteryLevel: round(v.batteryLevel, 2),\n        currentState: v.currentState,\n        timestamp: ts\n    };\n    if (v.vehicleType === \"sedan\") {\n        p.occupancy = occ(v, 4);\n        p.doorsLocked = v.doorsLocked;\n    } else if (v.vehicleType === \"van\") {\n        p.occupancy = occ(v, 7);\n        p.doorState = { front: v.doorState.front, slidingLeft: v.doorState.slidingLeft, rear: v.doorState.rear };\n        p.cargoLoadKg = round(v.cargoLoadKg, 1);\n    } else {\n        p.passengerCount = v.passengerCount;\n        p.passengerCapacity = 40;\n        p.doorState = { front: v.doorState.front, middle: v.doorState.middle, rear: v.doorState.rear };\n        p.wheelchairRampDeployed = v.rampDeployed;\n        p.nextStopId = v.route.length ? v.route[0] : v.nodeId;\n    }\n    return p;\n}\n",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
@@ -70,8 +70,8 @@
         "id": "a1d7e2f000000005",
         "type": "function",
         "z": "a1d7e2f000000001",
-        "name": "Edge Filter (parked + GPS delta < 0.0001)",
-        "func": "// Week 2 - Edge Filter\n// ROADMAP Week 2: \"drop a reading if parked and GPS delta < 0.0001 degrees\".\n// Keeps the last forwarded position per vehicle in flow context and compares against it.\n// Output 1: forwarded telemetry.  Output 2: suppressed packets (debug visibility only).\n\nconst GPS_EPSILON = 0.0001;\nconst p = msg.payload;\n\nconst lastSent = flow.get(\"lastSent\") || {};\nconst prev = lastSent[p.vehicleID];\n\nconst isParked = p.currentState === \"parked\";\nconst gpsUnchanged = !!prev\n    && Math.abs(p.coordinates.lat - prev.lat) < GPS_EPSILON\n    && Math.abs(p.coordinates.lon - prev.lon) < GPS_EPSILON;\n\nif (isParked && gpsUnchanged) {\n    msg.suppressedReason = \"parked and GPS delta < \" + GPS_EPSILON;\n    return [null, msg];\n}\n\nlastSent[p.vehicleID] = { lat: p.coordinates.lat, lon: p.coordinates.lon };\nflow.set(\"lastSent\", lastSent);\nreturn [msg, null];\n",
+        "name": "Edge Filter (stationary + GPS delta < 0.0001)",
+        "func": "// Edge Filter\n// ROADMAP Week 2: \"drop a reading if parked and GPS delta < 0.0001 degrees\".\n// A stationary vehicle (parked or charging) that has not moved since its last forwarded\n// packet is suppressed - EXCEPT a heartbeat packet gets through every HEARTBEAT_MS so the\n// Telemetry service (and the Dispatch service that reads it) always has a recent position\n// and battery level for an idle-but-available vehicle.\n// Output 1: forwarded. Output 2: suppressed (debug only).\n\nconst GPS_EPSILON = 0.0001;\nconst HEARTBEAT_MS = 20000;\nconst p = msg.payload;\nconst now = Date.now();\n\nconst lastSent = flow.get(\"lastSent\") || {};\nconst prev = lastSent[p.vehicleID];\n\nconst stationary = p.currentState === \"parked\" || p.currentState === \"charging\";\nconst gpsUnchanged = !!prev\n    && Math.abs(p.coordinates.lat - prev.lat) < GPS_EPSILON\n    && Math.abs(p.coordinates.lon - prev.lon) < GPS_EPSILON;\nconst withinHeartbeat = !!prev && (now - prev.at) < HEARTBEAT_MS;\n\nif (stationary && gpsUnchanged && withinHeartbeat) {\n    msg.suppressedReason = \"stationary and GPS delta < \" + GPS_EPSILON;\n    return [null, msg];\n}\n\nlastSent[p.vehicleID] = { lat: p.coordinates.lat, lon: p.coordinates.lon, at: now };\nflow.set(\"lastSent\", lastSent);\nreturn [msg, null];\n",
         "outputs": 2,
         "timeout": 0,
         "noerr": 0,
@@ -147,7 +147,7 @@
         "type": "comment",
         "z": "a1d7e2f000000001",
         "name": "MQTT broker",
-        "info": "# MQTT (Weeks 4 and 6)\n\nBroker: Eclipse Mosquitto on `localhost:1883` (repo-root `docker-compose.yml`).\n\n- **out**: forwarded telemetry is published to `fleet/<vehicleID>/telemetry`.\n- **in**: `fleet/+/command` is subscribed and fed to the Actuator Controller.\n\nThe Event Router (`services/event-router`) consumes `fleet/+/telemetry`, validates each payload against `schema/telemetry.schema.json`, and re-publishes valid packets on `validated/<vehicleID>/telemetry` for the Telemetry service. The Dispatch service (`services/dispatch-service`) publishes the `dispatch` commands.",
+        "info": "# MQTT (Weeks 4 and 6)\n\nBroker: Eclipse Mosquitto on `localhost:1883` (repo-root `docker-compose.yml`).\n\n- **out**: forwarded telemetry is published to `fleet/<vehicleID>/telemetry`.\n- **in**: `fleet/+/command` is subscribed and fed to the Actuator Controller.\n\nThe Event Router (`services/event-router`) consumes `fleet/+/telemetry`, validates each payload against `schema/telemetry.schema.json`, and re-publishes valid packets on `validated/<vehicleID>/telemetry`. The Dispatch service (`services/dispatch-service`) publishes the `dispatch` commands with an A* node route.",
         "x": 150,
         "y": 300,
         "wires": []
@@ -157,7 +157,7 @@
         "type": "comment",
         "z": "a1d7e2f000000001",
         "name": "Actuator commands",
-        "info": "# Actuators\n\nSimulated motor controller + door lock. Commands `{ vehicleID, command }` where command is one of `dispatch`, `stop`, `lock_doors`, `unlock_doors` arrive over MQTT on `fleet/+/command` (from the Week 6 Dispatch service) or from the inject nodes here. The controller mutates the vehicle in flow context and emits an actuator response to the debug sidebar.",
+        "info": "# Actuators\n\nSimulated motor controller + door lock. Commands `{ vehicleID, command, route?, passengers? }` where command is one of `dispatch`, `stop`, `lock_doors`, `unlock_doors` arrive over MQTT on `fleet/+/command` (from the Dispatch service) or from the inject nodes here. `dispatch` makes the vehicle follow the node-id route; `stop` clears it. Responses go to the debug sidebar.",
         "x": 150,
         "y": 380,
         "wires": []
@@ -187,7 +187,7 @@
         "id": "a1d7e2f000000009",
         "type": "inject",
         "z": "a1d7e2f000000001",
-        "name": "cmd: dispatch TAXI-002",
+        "name": "cmd: dispatch TAXI-001",
         "props": [
             {
                 "p": "payload"
@@ -201,8 +201,8 @@
         "crontab": "",
         "once": false,
         "onceDelay": 0.1,
-        "topic": "fleet/TAXI-002/command",
-        "payload": "{\"vehicleID\": \"TAXI-002\", \"command\": \"dispatch\"}",
+        "topic": "fleet/TAXI-001/command",
+        "payload": "{\"vehicleID\": \"TAXI-001\", \"command\": \"dispatch\", \"route\": [0, 14, 13]}",
         "payloadType": "json",
         "x": 190,
         "y": 500,
@@ -216,7 +216,7 @@
         "id": "a1d7e2f00000000a",
         "type": "inject",
         "z": "a1d7e2f000000001",
-        "name": "cmd: stop TAXI-002",
+        "name": "cmd: stop TAXI-001",
         "props": [
             {
                 "p": "payload"
@@ -230,8 +230,8 @@
         "crontab": "",
         "once": false,
         "onceDelay": 0.1,
-        "topic": "fleet/TAXI-002/command",
-        "payload": "{\"vehicleID\": \"TAXI-002\", \"command\": \"stop\"}",
+        "topic": "fleet/TAXI-001/command",
+        "payload": "{\"vehicleID\": \"TAXI-001\", \"command\": \"stop\"}",
         "payloadType": "json",
         "x": 190,
         "y": 560,
@@ -245,7 +245,7 @@
         "id": "a1d7e2f00000000b",
         "type": "inject",
         "z": "a1d7e2f000000001",
-        "name": "cmd: lock_doors TAXI-002",
+        "name": "cmd: lock_doors TAXI-001",
         "props": [
             {
                 "p": "payload"
@@ -259,8 +259,8 @@
         "crontab": "",
         "once": false,
         "onceDelay": 0.1,
-        "topic": "fleet/TAXI-002/command",
-        "payload": "{\"vehicleID\": \"TAXI-002\", \"command\": \"lock_doors\"}",
+        "topic": "fleet/TAXI-001/command",
+        "payload": "{\"vehicleID\": \"TAXI-001\", \"command\": \"lock_doors\"}",
         "payloadType": "json",
         "x": 190,
         "y": 620,
@@ -274,7 +274,7 @@
         "id": "a1d7e2f00000000c",
         "type": "inject",
         "z": "a1d7e2f000000001",
-        "name": "cmd: unlock_doors TAXI-002",
+        "name": "cmd: unlock_doors TAXI-001",
         "props": [
             {
                 "p": "payload"
@@ -288,8 +288,8 @@
         "crontab": "",
         "once": false,
         "onceDelay": 0.1,
-        "topic": "fleet/TAXI-002/command",
-        "payload": "{\"vehicleID\": \"TAXI-002\", \"command\": \"unlock_doors\"}",
+        "topic": "fleet/TAXI-001/command",
+        "payload": "{\"vehicleID\": \"TAXI-001\", \"command\": \"unlock_doors\"}",
         "payloadType": "json",
         "x": 190,
         "y": 680,
@@ -304,7 +304,7 @@
         "type": "function",
         "z": "a1d7e2f000000001",
         "name": "Actuator Controller",
-        "func": "// Week 2 - Actuator Controller\n// Plan (p3/p5): simulated motor controller + door lock that react to command messages.\n// Commands arrive over MQTT on fleet/+/command (the Week 6 Dispatch service publishes\n// \"dispatch\") or from the manual inject nodes on this tab.\n// Expected command payload: { vehicleID, command }.\n\nconst cmd = msg.payload || {};\nconst fleet = flow.get(\"fleet\") || [];\nconst v = fleet.find(x => x.vehicleID === cmd.vehicleID);\n\nif (!v) {\n    msg.topic = \"fleet/actuator/error\";\n    msg.payload = { error: \"unknown vehicleID\", received: cmd };\n    return msg;\n}\n\nlet action;\nswitch (cmd.command) {\n    case \"dispatch\":\n        v.moving = true;\n        action = \"motor controller engaged - vehicle dispatched\";\n        break;\n    case \"stop\":\n        v.moving = false;\n        v.speed = 0;\n        action = \"motor controller disengaged - vehicle stopped\";\n        break;\n    case \"lock_doors\":\n        v.doorsLocked = true;\n        action = \"door lock actuator - doors locked\";\n        break;\n    case \"unlock_doors\":\n        v.doorsLocked = false;\n        action = \"door lock actuator - doors unlocked\";\n        break;\n    default:\n        action = 'no actuator mapped for command \"' + cmd.command + '\"';\n}\n\nflow.set(\"fleet\", fleet);\nmsg.topic = \"fleet/\" + v.vehicleID + \"/actuator\";\nmsg.payload = {\n    vehicleID: v.vehicleID,\n    command: cmd.command,\n    action: action,\n    actuatorState: { moving: v.moving, doorsLocked: v.doorsLocked, speed: v.speed },\n    timestamp: Date.now()\n};\nreturn msg;\n",
+        "func": "// Actuator Controller (revised: adopt the graph route from a dispatch command)\n//\n// Commands arrive on fleet/+/command from the Week 6 Dispatch service, or from the manual\n// inject nodes here. Payload: { vehicleID, command, route?, passengers? }. command is one\n// of dispatch, stop, lock_doors, unlock_doors.\n//   dispatch : take on the node-id route (from A* in the Dispatch service) and board\n//              passengers; the simulator drives it next tick.\n\nconst cmd = msg.payload || {};\nconst fleet = flow.get(\"fleet\") || [];\nconst v = fleet.find((x) => x.vehicleID === cmd.vehicleID);\n\nif (!v) {\n    msg.topic = \"fleet/actuator/error\";\n    msg.payload = { error: \"unknown vehicleID\", received: cmd };\n    return msg;\n}\n\nlet action;\nswitch (cmd.command) {\n    case \"dispatch\": {\n        const route = Array.isArray(cmd.route) ? cmd.route.slice() : [];\n        if (route.length && route[0] === v.nodeId) route.shift();\n        v.route = route;\n        v.edgeProgress = 0;\n        const seats = v.vehicleType === \"van\" ? 7 : 4;\n        v.seatsOccupied = Math.max(1, Math.min(seats, cmd.passengers || 1));\n        if (v.vehicleType === \"van\") v.cargoLoadKg = Math.round(Math.random() * 40);\n        action = \"motor controller engaged - dispatched over \" + (v.route.length + 1) + \" nodes\";\n        break;\n    }\n    case \"stop\":\n        v.route = []; v.speed = 0; v.currentState = \"parked\"; v.seatsOccupied = 0;\n        action = \"motor controller disengaged - vehicle stopped\";\n        break;\n    case \"lock_doors\":\n        v.doorsLocked = true;\n        action = \"door lock actuator - doors locked\";\n        break;\n    case \"unlock_doors\":\n        v.doorsLocked = false;\n        action = \"door lock actuator - doors unlocked\";\n        break;\n    default:\n        action = 'no actuator mapped for command \"' + cmd.command + '\"';\n}\n\nflow.set(\"fleet\", fleet);\nmsg.topic = \"fleet/\" + v.vehicleID + \"/actuator\";\nmsg.payload = {\n    vehicleID: v.vehicleID,\n    command: cmd.command,\n    action: action,\n    actuatorState: {\n        route: v.route,\n        currentState: v.currentState,\n        doorsLocked: v.doorsLocked,\n        seatsOccupied: v.seatsOccupied\n    },\n    timestamp: Date.now()\n};\nreturn msg;\n",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,

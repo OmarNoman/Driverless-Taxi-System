@@ -1,10 +1,43 @@
 {
-    "$comment": "A well-formed telemetry document (one tick from the Week 2 simulator). Used to check the validator accepts a valid payload. Insert with: mongosh driverless_taxi --eval \"db.telemetry.insertOne(<this object, without $comment>)\"",
-    "vehicleID": "TAXI-001",
-    "coordinates": { "lat": -37.8136, "lon": 144.9631 },
-    "speed": 34.21,
-    "batteryLevel": 87.4,
-    "currentState": "driving",
-    "seatWeightKg": 72.5,
-    "timestamp": 1725000000000
+    "$comment": "One well-formed telemetry document per vehicle type (one tick from the Node-RED simulator). Used to check the validator accepts a valid payload of each shape. Insert one with: mongosh driverless_taxi --eval \"db.telemetry.insertOne(<the object, without $comment>)\"",
+    "sedan": {
+        "vehicleID": "TAXI-001",
+        "vehicleType": "sedan",
+        "coordinates": { "lat": -37.8135637, "lon": 144.9616326 },
+        "heading": 275.4,
+        "speed": 34.21,
+        "batteryLevel": 76.4,
+        "currentState": "driving",
+        "timestamp": 1725000000000,
+        "occupancy": { "seatsTotal": 4, "seatsOccupied": 2, "seatWeightKg": 138.5 },
+        "doorsLocked": true
+    },
+    "van": {
+        "vehicleID": "TAXI-002",
+        "vehicleType": "van",
+        "coordinates": { "lat": -37.7806943, "lon": 144.8317964 },
+        "heading": 88.0,
+        "speed": 41.0,
+        "batteryLevel": 62.1,
+        "currentState": "driving",
+        "timestamp": 1725000000000,
+        "occupancy": { "seatsTotal": 7, "seatsOccupied": 4, "seatWeightKg": 291.0 },
+        "doorState": { "front": "closed", "slidingLeft": "closed", "rear": "closed" },
+        "cargoLoadKg": 62.5
+    },
+    "bus": {
+        "vehicleID": "TAXI-003",
+        "vehicleType": "bus",
+        "coordinates": { "lat": -37.818131, "lon": 145.1256807 },
+        "heading": 190.2,
+        "speed": 22.5,
+        "batteryLevel": 84.0,
+        "currentState": "driving",
+        "timestamp": 1725000000000,
+        "passengerCount": 23,
+        "passengerCapacity": 40,
+        "doorState": { "front": "open", "middle": "closed", "rear": "closed" },
+        "wheelchairRampDeployed": false,
+        "nextStopId": 14
+    }
 }

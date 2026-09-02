@@ -1,20 +1,25 @@
-// Week 6 - Dispatch microservice
+// Dispatch microservice
 //
 // Plan (Project Plan, Week 6): "Implement the routing algorithm to calculate the nearest
 // available vehicle and send dispatch commands back to the Node-RED actuators via the MQTT
 // broker."
 //
-// POST /rides { userId, pickup:{lat,lon}, dropoff:{lat,lon} }
-//   -> filter available vehicles (Postgres status + live Mongo position)
-//   -> pick the best one (select.js: A* cost model f = g + h, Haversine distances)
+// POST /rides { userId, pickup: "<landmark name>", dropoff: "<landmark name>", passengers }
+//   -> filter available vehicles that can seat the party (Postgres) + live position (Mongo)
+//   -> A* over graph/melbourne.json from each vehicle's nearest node to the pickup node
+//   -> pick the lowest-cost vehicle (select.js: A* road km + battery + right-size penalties)
 //   -> write the trip to Postgres, mark the vehicle on_trip (one transaction)
-//   -> publish a dispatch command on fleet/<vehicleId>/command
-//   -> return the assignment synchronously (ARCHITECTURE.md open decision #3)
+//   -> publish a dispatch command carrying the node-id route on fleet/<vehicleId>/command
+//   -> return the assignment, ETA and the suburb route synchronously
+//
+// GET /nodes    -> the landmark names a request can use
+// GET /health
 
 import http from "node:http";
 import mqtt from "mqtt";
 import { createStore } from "./store.js";
-import { selectVehicle, haversineKm } from "./select.js";
+import { loadGraph } from "./graph.js";
+import { selectVehicle } from "./select.js";
 
 const HTTP_PORT = Number(process.env.HTTP_PORT || 8080);
 const MQTT_URL = process.env.MQTT_URL || "mqtt://localhost:1883";
@@ -24,9 +29,10 @@ const MONGO_URL = process.env.MONGO_URL || "mongodb://localhost:27017";
 const MONGO_DB = process.env.MONGO_DB || "driverless_taxi";
 const AVG_SPEED_KMH = Number(process.env.AVG_SPEED_KMH || 30);
 
+const graph = loadGraph();
 const store = createStore({ pgUrl: PG_URL, mongoUrl: MONGO_URL, mongoDb: MONGO_DB });
 await store.connect();
-console.log("[dispatch] connected to postgres + mongo");
+console.log(`[dispatch] graph ${graph.names().length} nodes; connected to postgres + mongo`);
 
 const mqttClient = mqtt.connect(MQTT_URL, { reconnectPeriod: 2000 });
 mqttClient.on("connect", () => console.log(`[dispatch] connected to ${MQTT_URL}`));
@@ -61,15 +67,6 @@ function readJson(req) {
   });
 }
 
-const isCoord = (c) =>
-  c &&
-  typeof c.lat === "number" &&
-  typeof c.lon === "number" &&
-  c.lat >= -90 &&
-  c.lat <= 90 &&
-  c.lon >= -180 &&
-  c.lon <= 180;
-
 async function handleRide(req, res) {
   let body;
   try {
@@ -79,65 +76,101 @@ async function handleRide(req, res) {
   }
 
   const { userId, pickup, dropoff } = body;
-  if (!Number.isInteger(userId) || !isCoord(pickup) || !isCoord(dropoff)) {
+  const passengers = body.passengers ?? 1;
+
+  if (
+    !Number.isInteger(userId) ||
+    typeof pickup !== "string" ||
+    typeof dropoff !== "string" ||
+    !Number.isInteger(passengers) ||
+    passengers < 1
+  ) {
     return send(res, 400, {
-      error: "expected { userId: int, pickup: {lat, lon}, dropoff: {lat, lon} }",
+      error:
+        'expected { userId: int, pickup: "<landmark>", dropoff: "<landmark>", passengers?: int >= 1 }',
     });
   }
+
+  const pickupNode = graph.idByName(pickup);
+  const dropoffNode = graph.idByName(dropoff);
+  if (pickupNode === null || dropoffNode === null) {
+    return send(res, 400, {
+      error: "unknown landmark",
+      unknown: [pickupNode === null ? pickup : null, dropoffNode === null ? dropoff : null].filter(Boolean),
+      validLandmarks: graph.names(),
+    });
+  }
+
   if (!(await store.userExists(userId))) {
     return send(res, 404, { error: `user ${userId} not found` });
   }
 
-  const candidates = await store.availableCandidates();
+  const candidates = await store.availableCandidates(passengers);
   if (candidates.length === 0) {
-    return send(res, 409, { error: "no available vehicle with a known position" });
+    return send(res, 409, { error: `no available vehicle seats ${passengers} with a known position` });
   }
 
-  const choice = selectVehicle(candidates, pickup);
-  const tripDistanceKm = haversineKm(pickup, dropoff);
+  const choice = selectVehicle(candidates, pickupNode, graph, passengers);
+  if (!choice) {
+    return send(res, 409, { error: "no vehicle can reach the pickup" });
+  }
 
-  const trip = await store.assignTrip({
+  const trip = graph.aStar(pickupNode, dropoffNode); // { path, costKm }
+  const pickupCoord = graph.node.get(pickupNode);
+  const dropoffCoord = graph.node.get(dropoffNode);
+
+  const assigned = await store.assignTrip({
     userId,
     vehicleId: choice.vehicleId,
-    pickup,
-    dropoff,
-    tripDistanceKm,
+    pickup: { lat: pickupCoord.lat, lon: pickupCoord.lon },
+    dropoff: { lat: dropoffCoord.lat, lon: dropoffCoord.lon },
+    tripDistanceKm: trip.costKm,
   });
-  if (!trip) {
+  if (!assigned) {
     return send(res, 409, { error: "selected vehicle was just taken, please retry" });
   }
 
-  const etaMinutes = round1((choice.h / AVG_SPEED_KMH) * 60);
+  const etaMinutes = round1((choice.roadKm / AVG_SPEED_KMH) * 60);
 
   mqttClient.publish(
     `fleet/${choice.vehicleId}/command`,
     JSON.stringify({
       vehicleID: choice.vehicleId,
       command: "dispatch",
-      rideId: trip.rideId,
-      pickup,
+      rideId: assigned.rideId,
+      pickup: graph.name(pickupNode),
+      passengers,
+      route: choice.route,
     }),
     { qos: 0 }
   );
 
   console.log(
-    `[dispatch] ride ${trip.rideId} -> ${choice.vehicleId} ` +
-      `(pickup ${choice.h.toFixed(2)}km, f=${choice.f.toFixed(2)}, eta ${etaMinutes}min, ` +
-      `candidates=${candidates.length})`
+    `[dispatch] ride ${assigned.rideId} -> ${choice.vehicleId} (${choice.vehicleType}) ` +
+      `pickup ${graph.name(choice.startNode)}->${graph.name(pickupNode)} ` +
+      `${choice.roadKm.toFixed(1)}km score=${choice.score.toFixed(1)} eta=${etaMinutes}min`
   );
 
   send(res, 200, {
-    rideId: trip.rideId,
+    rideId: assigned.rideId,
     vehicleId: choice.vehicleId,
+    vehicleType: choice.vehicleType,
     etaMinutes,
-    pickupDistanceKm: round1(choice.h),
-    tripDistanceKm: round1(tripDistanceKm),
-    assignedAt: trip.assignedAt,
+    pickupDistanceKm: round1(choice.roadKm),
+    tripDistanceKm: round1(trip.costKm),
+    route: choice.route.map((id) => graph.name(id)),
+    tripRoute: trip.path.map((id) => graph.name(id)),
+    assignedAt: assigned.assignedAt,
   });
 }
 
 const server = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") return send(res, 200, { ok: true });
+  if (req.method === "GET" && req.url === "/nodes") {
+    return send(res, 200, {
+      nodes: [...graph.node.values()].map((n) => ({ id: n.id, name: n.name })),
+    });
+  }
   if (req.method === "POST" && req.url === "/rides") {
     return handleRide(req, res).catch((e) => {
       console.error("[dispatch] error:", e);
@@ -148,7 +181,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(HTTP_PORT, () =>
-  console.log(`[dispatch] listening on :${HTTP_PORT}  (POST /rides)`)
+  console.log(`[dispatch] listening on :${HTTP_PORT}  (POST /rides, GET /nodes)`)
 );
 
 let shuttingDown = false;
