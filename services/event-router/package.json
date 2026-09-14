@@ -10,6 +10,7 @@
         "test": "node --test \"src/**/*.test.js\""
     },
     "dependencies": {
+        "@aws-sdk/client-sqs": "^3.600.0",
         "ajv": "^8.17.1",
         "mqtt": "^5.10.1"
     }

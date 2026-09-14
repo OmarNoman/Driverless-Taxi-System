@@ -7,18 +7,27 @@
 // shared schema, and log accepted vs rejected with the reason. Valid packets are
 // re-published on a "validated/<vehicleID>/telemetry" topic so the Week 5 Telemetry service
 // has a clean stream to consume. It does NOT write to a database - that is Week 5.
+//
+// Week 8: when SQS_QUEUE_URL is set (AWS only), every validated packet is additionally
+// sent to that queue, the SQS buffer the plan requires "between the MQTT broker and the
+// database". Locally (SQS_QUEUE_URL unset) this is a no-op - the MQTT publish above is
+// unchanged either way.
 
 import mqtt from "mqtt";
+import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { loadValidator, checkMessage, SCHEMA_PATH } from "./validator.js";
 
 const BROKER_URL = process.env.MQTT_URL || "mqtt://localhost:1883";
 const TOPIC_IN = process.env.TOPIC_IN || "fleet/+/telemetry";
 const OUT_PREFIX = process.env.TOPIC_OUT_PREFIX || "validated";
+const SQS_QUEUE_URL = process.env.SQS_QUEUE_URL || null;
 
 const validate = loadValidator();
 const stats = { received: 0, accepted: 0, rejected: 0 };
+const sqs = SQS_QUEUE_URL ? new SQSClient({}) : null;
 
 console.log(`[event-router] schema ${SCHEMA_PATH}`);
+if (sqs) console.log(`[event-router] also publishing validated packets to SQS ${SQS_QUEUE_URL}`);
 const client = mqtt.connect(BROKER_URL, { reconnectPeriod: 2000 });
 
 client.on("connect", () => {
@@ -44,7 +53,13 @@ client.on("message", (topic, buf) => {
 
   stats.accepted++;
   const p = result.payload;
-  client.publish(`${OUT_PREFIX}/${p.vehicleID}/telemetry`, JSON.stringify(p), { qos: 0 });
+  const body = JSON.stringify(p);
+  client.publish(`${OUT_PREFIX}/${p.vehicleID}/telemetry`, body, { qos: 0 });
+  if (sqs) {
+    sqs
+      .send(new SendMessageCommand({ QueueUrl: SQS_QUEUE_URL, MessageBody: body }))
+      .catch((e) => console.error("[event-router] sqs send failed:", e.message));
+  }
   console.log(
     `[event-router] OK     ${p.vehicleID} state=${p.currentState} ` +
       `batt=${p.batteryLevel} speed=${p.speed}`
