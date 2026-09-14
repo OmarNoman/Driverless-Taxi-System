@@ -53,3 +53,20 @@ resource "aws_vpc_endpoint" "logs" {
     Name = "${var.project_name}-vpce-logs"
   }
 }
+
+# Week 8b addition, found missing by hitting it directly: telemetry-service (private
+# subnet, no NAT Gateway) needs this to reach SQS at all. Without it, SQS calls resolve
+# to SQS's public IP with no route to it - confirmed via a live
+# "sqs receive failed: connect ETIMEDOUT <public-ip>:443" error in its logs.
+resource "aws_vpc_endpoint" "sqs" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${var.aws_region}.sqs"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${var.project_name}-vpce-sqs"
+  }
+}
