@@ -136,9 +136,46 @@ open decisions referenced below.
   synchronous response (flagged as an open decision, not assumed); no containerization
   or cloud deployment (Weeks 7-8); no load testing (Week 9).
 
-## Weeks 7-9 (not in this implementation pass)
+## Week 7 - Containerisation & Cloud Prep
 
-Containerization/cloud prep (7), AWS deployment & auto-scaling (8), and load
-testing/final reporting (9) are out of scope for this Week 1-6 implementation pass, per
-the current instruction. Open decisions #2 and #5 in `ARCHITECTURE.md` need resolving
-before Week 7 starts.
+- **Plan says (Project Plan, Week 7):** "Package the microservices into Docker
+  containers. Design the AWS VPC, defining public and private subnets for the IoT
+  ingestion and internal service layers respectively."
+- **Tasks:** a `Dockerfile` per Node.js service (`node:22-alpine`, `event-router` and
+  `dispatch-service` build from the repo root to reach `schema/`/`graph/`, each baking
+  the resolved path in as an env var); a Terraform-defined AWS VPC (`terraform/`) with a
+  public subnet for Mosquitto and a private subnet for the three services plus both
+  databases, VPC endpoints (`s3`, `ecr.api`, `ecr.dkr`, `logs`) instead of a NAT Gateway,
+  security groups per tier, and one ECR repository per Node.js service. Resolves open
+  decisions #2 (ECS Fargate) and #5 (Mosquitto public, everything else private, REST via
+  API Gateway) - full reasoning in `ARCHITECTURE.md` "Week 7 - containerisation and cloud
+  prep".
+- **Depends on:** Weeks 4-6 (the three services already work correctly locally; this
+  week repackages them, it does not change their logic).
+- **Deliverable:** `services/*/Dockerfile` (+ dockerignore files), `terraform/`
+  directory, all three images build and reproduce current behaviour when run against the
+  existing local stack, `terraform apply`-able networking + registry foundation.
+- **Validation:** `docker build` succeeds for all three services; each container run
+  against the existing `docker compose up -d` network reproduces current behaviour
+  (event-router logs a successful MQTT subscribe using its baked-in schema path;
+  dispatch-service's `/health` and `/nodes` respond correctly using its baked-in graph
+  path; telemetry-service logs periodic batch stats) - confirmed locally. `terraform
+  validate`/`fmt -check` pass and `terraform init` succeeds - confirmed. `terraform plan`
+  (from the user's AWS Academy Learner Lab session) showed exactly 19 resources to add
+  with no errors; `terraform apply` succeeded; AWS CLI confirmed every resource (VPC,
+  both subnets, all 4 VPC endpoints, all 4 security groups, all 3 ECR repos) matches the
+  Terraform config with zero drift; a manually-pushed `dtx-event-router:week7` image
+  appeared in its ECR repo via `aws ecr list-images` - all confirmed against the live
+  account, not just planned. `terraform destroy` removing everything cleanly is the
+  remaining step, run by the user at the end of each AWS session (see
+  `terraform/README.md`).
+- **Explicitly not doing yet:** no ECS cluster/service/task definitions, no running
+  containers in AWS, no SQS, no CloudWatch alarms or auto-scaling, no IAM roles (Week 8
+  will look up the pre-existing Academy `LabRole` via a Terraform `data` source, never
+  create one), no NAT Gateway (permanent design decision, not deferred), no API Gateway
+  resource (deferred to Week 8, see `ARCHITECTURE.md` for why), no load testing (Week 9).
+
+## Weeks 8-9 (not in this implementation pass)
+
+AWS deployment & auto-scaling (8), and load testing/final reporting (9) are out of scope
+for now, per the current instruction to build one week at a time.

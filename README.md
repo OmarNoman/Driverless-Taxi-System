@@ -16,9 +16,10 @@ source of truth for scope, requirements, and the week-by-week build order. See:
 Weeks 1-6 done: the full request-to-dispatch loop runs locally - edge simulation, data
 layer, MQTT ingestion, the batching Telemetry service, and the Dispatch service. A
 post-review revision added per-vehicle-type telemetry, an append-only telemetry history,
-and A* routing over a real Melbourne road graph (see `ARCHITECTURE.md`). Weeks 7-9
-(containerisation, AWS deployment + auto-scaling, load testing) are out of scope for this
-implementation pass. See [`ROADMAP.md`](./ROADMAP.md).
+and A* routing over a real Melbourne road graph (see `ARCHITECTURE.md`). Week 7 adds a
+`Dockerfile` per service and a Terraform-defined AWS VPC + container registry
+(`terraform/`), built one week at a time. Weeks 8-9 (AWS deployment + auto-scaling, load
+testing) are not yet started. See [`ROADMAP.md`](./ROADMAP.md).
 
 ## Project layout
 
@@ -32,10 +33,11 @@ driverless-taxi-system/
 ├── node-red/            local Node-RED project (IoT edge simulation)
 ├── db/                  PostgreSQL schema + MongoDB init (telemetry + telemetry_history)
 ├── broker/              Mosquitto config
+├── terraform/           Week 7 - AWS VPC + ECR (no running containers yet, that's Week 8)
 └── services/
-    ├── event-router/       validates the MQTT telemetry stream
-    ├── telemetry-service/   batches the validated stream into MongoDB
-    └── dispatch-service/    ride requests -> A* nearest vehicle -> MQTT command
+    ├── event-router/       validates the MQTT telemetry stream (+ Dockerfile)
+    ├── telemetry-service/   batches the validated stream into MongoDB (+ Dockerfile)
+    └── dispatch-service/    ride requests -> A* nearest vehicle -> MQTT command (+ Dockerfile)
 ```
 
 The simulated fleet is one sedan (TAXI-001), one van (TAXI-002) and one bus (TAXI-003).
@@ -90,6 +92,13 @@ Each component has its own README with details and checks:
 [`db/`](./db/README.md), [`event-router/`](./services/event-router/README.md),
 [`telemetry-service/`](./services/telemetry-service/README.md),
 [`dispatch-service/`](./services/dispatch-service/README.md).
+
+## Containers and AWS (Week 7)
+
+Each service also builds as a Docker image (`services/*/Dockerfile`), and
+[`terraform/`](./terraform/README.md) provisions the AWS VPC networking and container
+registry those images deploy onto in Week 8. See `terraform/README.md` for the AWS
+Academy Learner Lab credential workflow and exact commands.
 
 ## Version control
 

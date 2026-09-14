@@ -63,8 +63,10 @@ These stay as answers you can give if asked "how would this scale further," not 
    Week 8 concerns).
 2. **Week 7-8 compute target.** Implementation Plan says containers will be deployed via
    "Amazon Elastic Container Service **or** EC2 Auto Scaling Groups" - an unresolved
-   either/or. Doesn't block Weeks 1-6, but needs a decision before Week 7. Proposed
-   default: ECS Fargate.
+   either/or. **Resolved (Week 7): ECS Fargate**, chosen over EC2 Auto Scaling Groups
+   because it needs no server patching/management, scales to zero cost once torn down,
+   and bills per-second while tasks run - a better fit for a Learner Lab environment that
+   gets built, tested, and destroyed repeatedly rather than kept running.
 3. **How commuters receive ride status updates.** The Solution Overview's stakeholder
    requirements promise commuters "real-time status updates," but no week's task and
    neither diagram specifies the mechanism. **Resolved (Week 6): synchronous only.** The
@@ -75,12 +77,15 @@ These stay as answers you can give if asked "how would this scale further," not 
    simulate the union of both (GPS, battery, speedometer, seat-weight).
 5. **Public-subnet ingestion wording.** Implementation Plan's cloud section says "an AWS
    API Gateway and an MQTT will be exposed in the public subnet" - unclear phrasing.
-   Only affects Week 8 (AWS networking), not Weeks 1-6. Proposed default: API Gateway
-   serves the passenger-facing REST API; the MQTT broker has its own TLS-secured public
-   endpoint for vehicle connections.
+   **Resolved (Week 7):** the Mosquitto broker sits in the VPC's public subnet (the same
+   role it plays locally, reachable directly by the vehicle simulator); the three Node.js
+   services and both databases sit in private subnets; the passenger-facing REST API
+   (Dispatch service) is reached via API Gateway rather than being exposed directly. The
+   API Gateway resource itself is a Week 8 build item (see "Week 7 - containerisation and
+   cloud prep" below for why), but the subnet design this decision requires is built now.
 
-Items 1, 3 and 4 are resolved (Weeks 4, 6 and 2). Items 2 and 5 are Week 7-8 concerns and
-did not block the Weeks 1-6 implementation.
+Items 1, 2, 3, 4 and 5 are all resolved. Items 2 and 5 only started mattering from Week 7
+onward and did not block the Weeks 1-6 implementation.
 
 ## Revisions after the Weeks 1-6 review
 
@@ -132,6 +137,66 @@ dependencies, and the units under test are simple (pure functions, one class wit
 injected fake). Jest would add ergonomic mocking and snapshots; it would be revisited only
 if later integration testing needs them, and via a root workspace rather than three
 copies.
+
+## Week 7 - containerisation and cloud prep
+
+Plan says (Project Plan, Week 7): "Package the microservices into Docker containers.
+Design the AWS VPC, defining public and private subnets for the IoT ingestion and
+internal service layers respectively." This week produces buildable Docker images and
+the Terraform-defined AWS networking + container registry Week 8 deploys onto - no
+running containers in AWS, no SQS, no auto-scaling, no IAM roles, those are Week 8.
+
+**Deployment target is an AWS Academy Learner Lab account**, which shapes this design in
+two concrete ways beyond the plan's own wording: it cannot create IAM roles or policies
+(any role Week 8 needs must be an existing `LabRole`, looked up via a Terraform `data`
+source, never created), and its budget is fixed for the whole course rather than
+resetting per session, so the design favours cheap-to-run, trivial-to-tear-down over
+production-grade HA.
+
+- **Dockerfiles** (`services/*/Dockerfile`, `node:22-alpine`): `event-router` and
+  `dispatch-service` each need a file from outside their own directory
+  (`schema/telemetry.schema.json`, `graph/melbourne.json` respectively), so their build
+  context is the repo root, and each bakes the resolved path in as `ENV
+  SCHEMA_PATH=...`/`ENV GRAPH_PATH=...`, both already-overridable env vars in the
+  existing code, so no application code changed. `telemetry-service` needs no outside
+  file and builds from its own directory. All three run `CMD ["node", "src/index.js"]`
+  rather than `npm start`, since `npm` does not forward `SIGTERM` to the child process,
+  which would otherwise silently break the graceful-shutdown handlers all three services
+  already implement once ECS starts stopping tasks in Week 8. Connection strings
+  (`MQTT_URL`, `PG_URL`, `MONGO_URL`, `HTTP_PORT`) stay supplied at run time, never baked
+  into an image layer.
+- **VPC** (`terraform/vpc.tf`, `10.20.0.0/16`): one public subnet (Mosquitto only) and
+  one private subnet (the three services plus both databases, tier isolation enforced by
+  security groups rather than separate subnets), across `var.az_count` availability
+  zones, defaulted to **1** rather than the usual 2, since the 3 interface VPC endpoints
+  bill per-AZ and this environment is torn down after every test session rather than run
+  for real HA to matter. A one-line variable change restores multi-AZ if the final report
+  needs to demonstrate it.
+- **No NAT Gateway, by design, permanently.** Private-subnet resources reach AWS
+  services through **VPC endpoints** instead (`terraform/vpc-endpoints.tf`): a free S3
+  gateway endpoint (ECR stores image layers in S3) plus interface endpoints for
+  `ecr.api`, `ecr.dkr`, and `logs`. This avoids NAT's non-trivial hourly cost and the low
+  Elastic IP quota Academy accounts typically have. Trade-off: Week 7 can only confirm
+  these endpoints exist and are correctly configured; proving a private-subnet Fargate
+  task can actually pull an image through them is a Week 8 concern, since no task runs
+  here yet.
+- **Security groups** (`terraform/security-groups.tf`): Mosquitto's is open on 1883 to
+  the internet; the database SG accepts 5432/27017 only from the internal-services SG;
+  the internal-services SG has **no ingress rule yet**, since none of the three services
+  listen on a port Week 7 has a caller for (Dispatch's port-8080 ingress source depends
+  on whether Week 8 fronts it with a VPC Link/NLB or an ALB, a decision that belongs to
+  Week 8 once something is actually running behind it).
+- **Container registry** (`terraform/ecr.tf`): one ECR repository per Node.js service,
+  `force_delete = true` on each so `terraform destroy` never fails on a repo still
+  holding an image. Mosquitto gets no repository, it pulls `eclipse-mosquitto:2` straight
+  from Docker Hub via its public subnet's direct internet egress.
+- **No API Gateway resource this week**, a deliberate scope call, not an oversight: its
+  only useful backend integration (a VPC Link to a private Fargate service) does not
+  exist until Week 8 stands up the actual ECS service, so an empty API Gateway shell has
+  nothing to validate against, which would break this project's pattern of pairing every
+  deliverable with a concrete, observable check.
+- **Terraform state is local**, no S3/DynamoDB backend, appropriate for a solo student
+  project that gets rebuilt from scratch each session rather than shared with a team.
 
 ## Note on version control
 

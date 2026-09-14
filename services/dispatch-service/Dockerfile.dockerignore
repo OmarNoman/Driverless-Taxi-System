@@ -1,0 +1,12 @@
+node_modules
+**/node_modules
+.git
+.github
+node-red
+db
+broker
+terraform
+schema
+services/event-router
+services/telemetry-service
+*.md
