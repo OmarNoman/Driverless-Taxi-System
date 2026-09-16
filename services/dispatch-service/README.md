@@ -19,7 +19,7 @@ POST /rides ──▶ dispatch-service ──┬─▶ PostgreSQL  rides (+ vehi
   to the pickup node; score = `roadKm + batteryPenaltyKm + sizePenaltyKm`. Lowest wins.
 - **Trip record + `on_trip` flip** happen in one transaction; a guarded `UPDATE` means a
   vehicle can't be dispatched twice concurrently.
-- **Response** is synchronous (ARCHITECTURE.md open decision #3): the assigned vehicle,
+- **Response** is synchronous (a deliberate design decision, no live push or polling): the assigned vehicle,
   ETA, and the suburb route come straight back. The dispatch command carries the node-id
   route for the simulator to drive.
 

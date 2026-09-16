@@ -3,27 +3,9 @@
 SIT314 (Software Architecture and Scalability for IoT) Distinction project - a scalable,
 event-driven IoT platform for managing a fleet of simulated driverless taxis.
 
-This repository is the implementation of the **1.2D Project Plan**, which is the single
-source of truth for scope, requirements, and the week-by-week build order. See:
-
-- [`ARCHITECTURE.md`](./ARCHITECTURE.md) - finalized system design, confirmed decisions,
-  and open decisions still needing a call.
-- [`ROADMAP.md`](./ROADMAP.md) - the week-by-week implementation plan, mapped directly to
-  the 1.2D Plan, with dependencies and validation criteria for each week.
-
-## Status
-
-Weeks 1-6 done: the full request-to-dispatch loop runs locally - edge simulation, data
-layer, MQTT ingestion, the batching Telemetry service, and the Dispatch service. A
-post-review revision added per-vehicle-type telemetry, an append-only telemetry history,
-and A* routing over a real Melbourne road graph (see `ARCHITECTURE.md`).
-
-Week 7 added a `Dockerfile` per service and a Terraform-defined AWS VPC + container
-registry. Week 8 (split into 8a/8b/8c, built one piece at a time) has containerised the
-databases and wired an SQS buffer (8a), and deployed the whole system to AWS as 6 running
-ECS Fargate services with that SQS buffer proven working end to end (8b). API Gateway and
-CloudWatch auto-scaling (8c) and Week 9's load testing are not started. See
-[`ROADMAP.md`](./ROADMAP.md).
+This repository is the implementation of the 1.2D Project Plan, built over nine weeks
+from local prototype through to a fully deployed, auto-scaling AWS system, and load
+tested at up to 500 simulated vehicles.
 
 ## How it works
 
@@ -55,22 +37,25 @@ actuator picks up that command and drives the vehicle along the route.
 Everything is stateless and reconnects on its own; there's no service that has to start
 before another for the system to eventually converge.
 
+In AWS, the passenger-facing side is fronted by an API Gateway HTTP API (with a VPC Link
+into the private subnet), and event-router and telemetry-service both auto-scale on
+CloudWatch alarms: CPU utilisation for event-router, CPU and SQS queue depth for
+telemetry-service.
+
 ## Project layout
 
 ```
 driverless-taxi-system/
-├── ARCHITECTURE.md      finalized design + open decisions + post-review revisions
-├── ROADMAP.md           week-by-week plan, traced to the 1.2D Plan
 ├── docker-compose.yml   local infra: postgres, mongo, mosquitto
 ├── schema/              telemetry.schema.json - shared per-vehicle-type payload contract
 ├── graph/               melbourne.json - road network for A* dispatch + route following
-├── node-red/            local Node-RED project (IoT edge simulation)
+├── node-red/            local Node-RED project (IoT edge simulation + load-test tooling)
 ├── db/
 │   ├── postgres/          schema.sql + seeds (+ Dockerfile: same, baked in for AWS)
 │   └── mongo/              init-telemetry.sh (+ Dockerfile: same, baked in for AWS)
 ├── broker/               Mosquitto config (local only; AWS writes an equivalent config
 │                         inline in the ECS task definition, see terraform/ecs.tf)
-├── terraform/            AWS VPC, registry, and (from 8b) the running ECS deployment
+├── terraform/            AWS VPC, registry, ECS deployment, API Gateway, auto-scaling
 └── services/
     ├── event-router/       validates the MQTT telemetry stream (+ Dockerfile)
     ├── telemetry-service/   batches the validated stream into MongoDB (+ Dockerfile)
@@ -149,21 +134,24 @@ Each service (plus custom-seeded Postgres and Mongo images) builds as a Docker i
   deliberate substitution: AWS Cloud Map is entirely blocked in the AWS Academy Learner
   Lab account this was built and tested against, so the three Node.js services reach
   Postgres/Mongo/Mosquitto via `<internal-nlb-dns-name>:<port>` instead of per-service
-  DNS names. See `terraform/README.md`'s "Cloud Map is blocked in this account" note.
+  DNS names.
+- A public API Gateway HTTP API with a VPC Link fronting dispatch-service, so ride
+  requests can be made over HTTPS from outside the VPC.
+- CloudWatch alarms and AWS Application Auto Scaling on event-router (CPU) and
+  telemetry-service (CPU and SQS queue depth), scaling each between 1 and 3 tasks.
+- Credentials (the Postgres password and connection string) stored in AWS SSM Parameter
+  Store as `SecureString` parameters rather than plaintext Terraform variables.
 - 5 ECR repositories (one per Node.js service, one each for the custom-seeded
   Postgres/Mongo images).
 
-Not yet built: the API Gateway resource in front of dispatch-service and the
-CloudWatch/Application Auto Scaling policies (both Week 8c), and the escalating load test
-(Week 9).
-
 This has been proven working end to end against a real account: all 6 services reach
-`running == desired`, and a live MQTT publish through Mosquitto's public IP was confirmed
-to flow all the way through event-router, SQS, and telemetry-service into MongoDB.
+`running == desired`, a live MQTT publish through Mosquitto's public IP flows all the way
+through event-router, SQS, and telemetry-service into MongoDB, and a sustained 500-vehicle
+load test genuinely triggered CloudWatch alarms and auto-scaled both event-router and
+telemetry-service.
 
-Full setup (AWS Academy Learner Lab credential workflow, exact build/push/apply/verify
-commands, and a running list of environment-specific gotchas actually hit and fixed while
-building this) is in [`terraform/README.md`](./terraform/README.md). Two things worth
+Full setup (AWS Academy Learner Lab credential workflow and the exact build/push/apply/
+verify commands) is in [`terraform/README.md`](./terraform/README.md). Two things worth
 knowing before you open that file:
 
 - **`terraform apply` needs a live AWS Academy Learner Lab session** - temporary

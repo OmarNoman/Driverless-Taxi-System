@@ -16,9 +16,9 @@
 # free, standard metric).
 #
 # Deliberate deviation from the plan's literal wording, documented here rather than
-# silently built either way (see ARCHITECTURE.md "Week 8c" for the full reasoning):
-# event-router only ever WRITES to the SQS queue in AWS mode, it never reads from or
-# drains it - only telemetry-service (the consumer) does. Scaling event-router on queue
+# silently built either way: event-router only ever WRITES to the SQS queue in AWS
+# mode, it never reads from or drains it - only telemetry-service (the consumer) does.
+# Scaling event-router on queue
 # depth would not mechanically relieve a backed-up queue, so event-router gets a
 # CPU-only trigger here; telemetry-service gets both CPU and queue depth.
 
