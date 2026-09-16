@@ -230,6 +230,34 @@ exactly the "single line change" `variables.tf`'s own comment already anticipate
 multi-AZ demonstration, just triggered here by a hard technical requirement rather than a
 report-writing choice.
 
+Confirmed working end to end against the live account: `GET /health`, `GET /nodes`, and
+`POST /rides` (once a vehicle has a known position) all return the same responses
+already proven directly against the NLB in Week 8b, now reachable from a public HTTPS
+URL. One operational quirk found and confirmed, not a config bug: the *first* request
+to the invoke URL after a period of idleness returns `{"message":"Service
+Unavailable"}`, while an identical request sent immediately afterward succeeds -
+demonstrated directly with two back-to-back requests to the same route. This is a
+connection/VPC-Link warm-up cost after idle time, not anything wrong with a specific
+route (it had looked like `/health` specifically was broken purely because it was
+always the first request tried in each test batch). See `terraform/README.md`'s
+"Common errors" for the practical workaround.
+
+**8c-ii - event-router's MQTT fan-out (`terraform/ecs.tf`, event-router's `environment`
+block):** found while planning the auto-scaling sub-part (8c-iii): event-router
+subscribes to a *plain* MQTT topic filter (`fleet/+/telemetry`), and plain MQTT fans
+every message out to every subscriber. Scaling event-router past 1 instance would have
+made every instance receive and process every telemetry packet independently -
+duplicate SQS sends, duplicate `telemetry_history` writes - not a load split. This had
+never mattered before since it only ever ran as a fixed single instance. Fixed by
+switching the subscribe filter to a shared subscription:
+`TOPIC_IN=$share/event-router/fleet/+/telemetry`. This required **zero application code
+changes** - `TOPIC_IN` was already an environment variable
+(`services/event-router/src/index.js`), used only as the `subscribe()` filter; the
+`message` handler receives the broker-delivered *publish* topic regardless of the
+subscribe-side filter, so downstream vehicleID parsing is unaffected. Mosquitto 2.x
+supports `$share/` natively with no plugin and no ACL involvement, confirmed against
+both the local anonymous config and the AWS task's equivalent inline config.
+
 ## Note on version control
 
 If `git commit` fails with a stuck `.git/index.lock` error, delete the stale lock file

@@ -293,6 +293,16 @@ resource "aws_ecs_task_definition" "event_router" {
         # Fargate does not auto-inject AWS_REGION the way Lambda does - without this the
         # @aws-sdk/client-sqs client fails at startup with "Region is missing".
         { name = "AWS_REGION", value = var.aws_region },
+        # Week 8c-ii: a shared subscription, not a plain one. Plain MQTT fans every
+        # message out to every subscriber, so scaling this service past 1 instance
+        # (Week 8c-iii) would have every instance process every packet - duplicate SQS
+        # sends, duplicate telemetry_history writes, not a load split. $share/ makes
+        # the broker split delivery across instances instead. Requires zero app code
+        # change: TOPIC_IN is already an env var (services/event-router/src/index.js),
+        # used only as the subscribe() filter - the message handler still receives the
+        # real publish topic (e.g. fleet/TAXI-001/telemetry), unaffected by the $share/
+        # prefix, so downstream vehicleID parsing is unchanged.
+        { name = "TOPIC_IN", value = "$share/event-router/fleet/+/telemetry" },
       ]
       logConfiguration = {
         logDriver = "awslogs"
