@@ -310,6 +310,32 @@ observed idle CPU (~0.2-0.25%) causes a genuine CloudWatch evaluation to cross i
 minutes after the threshold was reverted, once the already-armed `cpu_low` alarm (30%
 threshold, comfortably above real idle CPU) fired.
 
+## Security hardening - Postgres credential (Week 9)
+
+Found while preparing the final report's security discussion: `terraform/ecs.tf` had a
+hardcoded plaintext Postgres password (`dtx_dev_pw`) directly in two container
+definitions - the Postgres task itself and dispatch-service's `PG_URL` - committed to
+the GitHub repo's history. Fixed in `terraform/secrets.tf`: a `random_password` resource
+generates the credential (never written to any committed file - it lands only in
+`terraform.tfstate`, which is already gitignored), stored in two SSM Parameter Store
+`SecureString` parameters (the bare password, and the full `PG_URL` connection string),
+referenced by both ECS task definitions via a `secrets` block instead of `environment`.
+ECS resolves the value at container start; both containers still just see a plain env
+var, so no application code changed. Uses the default AWS-managed `alias/aws/ssm` KMS
+key - no custom key or IAM policy to provision, consistent with this Academy account's
+`iam:CreateRole`/`PutRolePolicy` restriction.
+
+**Untested risk, same class as the Application Auto Scaling service-linked role check in
+8c-iii**: whether the shared `LabRole` (used as every task's execution role) actually has
+`ssm:GetParameters` + `kms:Decrypt` has not been confirmed before this change - found out
+on the next `apply`, not assumed. See `terraform/README.md` "Common errors" for the
+workaround if it's missing.
+
+**Deliberately not touched**: the local MQTT broker (`allow_anonymous true`, plain TCP,
+open to `0.0.0.0/0`) - already disclosed in this document (Week 7/8 sections) as a
+scope decision, not a silent gap, and judged higher-risk to rework this late than to
+leave as a documented limitation for the report's discussion section.
+
 ## Note on version control
 
 If `git commit` fails with a stuck `.git/index.lock` error, delete the stale lock file

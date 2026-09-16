@@ -162,6 +162,27 @@ here is idempotent.
   screenshot:** just retry immediately - each fresh request has roughly even odds of
   succeeding independent of the last one's result, so a second or third attempt
   typically gets a clean `200` to capture.
+- **`aws cloudwatch get-metric-statistics` returns `"Datapoints": []` even though the
+  service is definitely running and under load** - almost certainly a PowerShell
+  timezone bug in the `--start-time`/`--end-time` arguments, not missing data.
+  `(Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")` does NOT convert to UTC - the `Z` in a
+  .NET custom format string is not a timezone conversion, it just prints literally, so
+  this silently mislabels local time as UTC. On a UTC+10 machine this points the query
+  window about 10 hours into the future relative to real UTC, which of course has no
+  data. Fix: call `.ToUniversalTime()` before `.ToString(...)`:
+  ```powershell
+  $start = (Get-Date).ToUniversalTime().AddMinutes(-10).ToString("yyyy-MM-ddTHH:mm:ssZ")
+  $end = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+  ```
+- **A Postgres or dispatch-service task fails to start, or logs an auth/permission
+  error resolving its environment, after the Week 9 SSM secrets change** - likely the
+  shared `LabRole` lacking `ssm:GetParameters`/`kms:Decrypt` (untested before this
+  change, this account's IAM restrictions are otherwise only confirmed for
+  `iam:CreateRole`/`PutRolePolicy` and Cloud Map - see `ARCHITECTURE.md` "Security
+  hardening"). There is no way to grant this ourselves (no `iam:PutRolePolicy`) - if
+  hit, the only options are asking whether the Academy account's `LabRole` can be
+  broadened, or reverting `terraform/ecs.tf`'s two `secrets` blocks back to plaintext
+  `environment` entries for this account specifically.
 - **`aws_appautoscaling_target.event_router`/`.telemetry_service` fails with
   `AccessDeniedException` on `iam:CreateServiceLinkedRole`** - this Academy account has
   confirmed-blocked `iam:CreateRole`/`iam:PutRolePolicy` (see `iam.tf`) and Cloud Map,
@@ -188,11 +209,13 @@ exists just sits retrying pulls, so push first to skip the confusion.
 cd terraform
 terraform init
 terraform validate
-terraform plan      # expect roughly 78 resources to add on a first full apply (8c-i
-                    # through 8c-iii included): az_count=2 means 2 public + 2 private
-                    # subnets rather than 1 of each, the 7 API Gateway/VPC Link
-                    # resources, and 14 auto-scaling resources (2 scalable targets, 6
-                    # policies, 6 alarms), on top of everything Week 7/8b provisions
+terraform plan      # expect roughly 81 resources to add on a first full apply (8c-i
+                    # through 8c-iii, plus the Week 9 SSM secrets fix, included):
+                    # az_count=2 means 2 public + 2 private subnets rather than 1 of
+                    # each, the 7 API Gateway/VPC Link resources, 14 auto-scaling
+                    # resources (2 scalable targets, 6 policies, 6 alarms), and 3
+                    # secrets resources (1 random_password, 2 aws_ssm_parameter), on
+                    # top of everything Week 7/8b provisions
 ```
 
 **8c-iii only: apply the 2 scalable targets in isolation first**, to cheaply surface an

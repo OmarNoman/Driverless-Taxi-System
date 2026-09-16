@@ -151,8 +151,12 @@ resource "aws_ecs_task_definition" "postgres" {
       portMappings = [{ containerPort = 5432, protocol = "tcp" }]
       environment = [
         { name = "POSTGRES_USER", value = "dtx" },
-        { name = "POSTGRES_PASSWORD", value = "dtx_dev_pw" },
         { name = "POSTGRES_DB", value = "driverless_taxi" },
+      ]
+      # Resolved by ECS from SSM Parameter Store at container start (secrets.tf) - the
+      # container still just sees a plain POSTGRES_PASSWORD env var, no image/app change.
+      secrets = [
+        { name = "POSTGRES_PASSWORD", valueFrom = aws_ssm_parameter.postgres_password.arn },
       ]
       logConfiguration = {
         logDriver = "awslogs"
@@ -439,8 +443,12 @@ resource "aws_ecs_task_definition" "dispatch_service" {
       environment = [
         { name = "HTTP_PORT", value = "8080" },
         { name = "MQTT_URL", value = "mqtt://${aws_lb.internal.dns_name}:1883" },
-        { name = "PG_URL", value = "postgresql://dtx:dtx_dev_pw@${aws_lb.internal.dns_name}:5432/driverless_taxi" },
         { name = "MONGO_URL", value = "mongodb://${aws_lb.internal.dns_name}:27017" },
+      ]
+      # Resolved by ECS from SSM Parameter Store at container start (secrets.tf) - the
+      # container still just sees a plain PG_URL env var, no application code change.
+      secrets = [
+        { name = "PG_URL", valueFrom = aws_ssm_parameter.postgres_url.arn },
       ]
       logConfiguration = {
         logDriver = "awslogs"
