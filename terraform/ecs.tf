@@ -333,6 +333,14 @@ resource "aws_ecs_service" "event_router" {
     assign_public_ip = false
   }
 
+  # Week 8c-iii: Application Auto Scaling (autoscaling.tf) changes the live desired
+  # count directly via its own UpdateService calls, outside Terraform. Without this,
+  # the next plan/apply would see that as drift and force desired_count back to the
+  # literal 1 below, silently undoing an active scale-out.
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
+
   tags = {
     Name = "${var.project_name}-event-router"
   }
@@ -391,6 +399,14 @@ resource "aws_ecs_service" "telemetry_service" {
     subnets          = aws_subnet.private[*].id
     security_groups  = [aws_security_group.internal_services.id]
     assign_public_ip = false
+  }
+
+  # Week 8c-iii: Application Auto Scaling (autoscaling.tf) changes the live desired
+  # count directly via its own UpdateService calls, outside Terraform. Without this,
+  # the next plan/apply would see that as drift and force desired_count back to the
+  # literal 1 below, silently undoing an active scale-out.
+  lifecycle {
+    ignore_changes = [desired_count]
   }
 
   tags = {

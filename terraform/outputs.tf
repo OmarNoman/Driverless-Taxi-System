@@ -59,3 +59,23 @@ output "http_api_invoke_url" {
   description = "Public entry point for dispatch-service's 3 routes (GET /health, GET /nodes, POST /rides), via API Gateway HTTP API + VPC Link -> internal NLB -> dispatch-service. Week 8c."
   value       = aws_apigatewayv2_stage.default.invoke_url
 }
+
+output "autoscaling_target_resource_ids" {
+  description = "For aws application-autoscaling describe-scalable-targets verification. Week 8c-iii."
+  value = {
+    event_router      = aws_appautoscaling_target.event_router.resource_id
+    telemetry_service = aws_appautoscaling_target.telemetry_service.resource_id
+  }
+}
+
+output "cloudwatch_alarm_names" {
+  description = "For aws cloudwatch describe-alarms verification and forcing a demo scale-out/in. Week 8c-iii."
+  value = [
+    aws_cloudwatch_metric_alarm.event_router_cpu_high.alarm_name,
+    aws_cloudwatch_metric_alarm.event_router_cpu_low.alarm_name,
+    aws_cloudwatch_metric_alarm.telemetry_service_cpu_high.alarm_name,
+    aws_cloudwatch_metric_alarm.telemetry_service_cpu_low.alarm_name,
+    aws_cloudwatch_metric_alarm.telemetry_service_sqs_high.alarm_name,
+    aws_cloudwatch_metric_alarm.telemetry_service_sqs_low.alarm_name,
+  ]
+}

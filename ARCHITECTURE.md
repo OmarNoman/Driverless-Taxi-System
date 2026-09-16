@@ -256,7 +256,55 @@ changes** - `TOPIC_IN` was already an environment variable
 `message` handler receives the broker-delivered *publish* topic regardless of the
 subscribe-side filter, so downstream vehicleID parsing is unaffected. Mosquitto 2.x
 supports `$share/` natively with no plugin and no ACL involvement, confirmed against
-both the local anonymous config and the AWS task's equivalent inline config.
+both the local anonymous config and the AWS task's equivalent inline config. Confirmed
+locally with two instances and a 200-message burst: before the fix both instances'
+`received` stats landed at 200 (duplicate fan-out - the bug is real); after, the two
+summed to 200 (100/100 in the observed run), split between them with nothing dropped.
+
+**8c-iii - CloudWatch alarms + Application Auto Scaling
+(`terraform/autoscaling.tf`):** Step Scaling policies driven by explicit CloudWatch
+alarms, for both CPU and SQS queue depth, chosen over Target Tracking because the
+plan's own wording is threshold-crossing language ("if X exceeds a set threshold, spin
+up additional instances... scaling back down when traffic subsides") - a near 1:1
+translation to "alarm breaches threshold -> step policy adds capacity," and each step
+is individually inspectable in CloudWatch for Week 9's evidence. Target Tracking has
+no predefined ECS metric for SQS depth; doing it "properly" needs a metric-math-derived
+"backlog per task" customized metric, exactly the kind of custom/derived metric already
+avoided by choosing `ApproximateNumberOfMessagesVisible` (the correct CloudWatch metric
+name for what the SQS API attribute `ApproximateNumberOfMessages` reports) in the first
+place - a free, standard, non-custom metric.
+
+**Deliberate deviation from the plan's literal wording:** the plan names both "the
+Telemetry and Event Router microservices" for scaling on queue depth. event-router only
+ever *writes* to `dtx-telemetry-queue` in AWS mode - it never reads from or drains it;
+only telemetry-service (the consumer) does. Scaling event-router in response to queue
+depth would not mechanically relieve a backed-up queue, so **event-router scales on CPU
+only here; telemetry-service scales on both CPU and queue depth.** This is a conscious,
+explained departure from the plan's literal wording, not a silent one - made because
+the mechanically correct design was judged more defensible than literal compliance with
+a requirement that would not do what it says. CPU thresholds: 70% (2 min) to scale out,
+30% (3 min) to scale in, on both services. Queue-depth thresholds on telemetry-service:
+100 messages (2 min) to scale out, 10 (3 min) to scale in - Week 9's load tests run
+10/100/500 vehicles at 1s intervals, and telemetry-service's 5-second batch flush should
+keep normal-load queue depth in the single digits, so 100 sustained is comfortably above
+the noise floor while reachable once load is heavy enough to matter. Both
+`aws_ecs_service.event_router` and `aws_ecs_service.telemetry_service` needed
+`lifecycle { ignore_changes = [desired_count] }` added (`terraform/ecs.tf`) - without
+it, a `terraform plan`/`apply` run while auto-scaled out would see the live desired
+count as drift from the hardcoded `1` and silently force it back down.
+
+Confirmed working end to end against the live account, with a genuine (not synthetic)
+CloudWatch-driven scale-out and scale-in: `aws cloudwatch set-alarm-state` was tried
+first as a quick demo shortcut and found unreliable - it changes an alarm's displayed
+state but does not dependably invoke the associated Application Auto Scaling policy, so
+it is not used anywhere in this project's verification steps (see `terraform/README.md`
+"Common errors"). The technique that does work: temporarily lowering
+`telemetry_service_cpu_high`'s threshold below telemetry-service's real, currently-
+observed idle CPU (~0.2-0.25%) causes a genuine CloudWatch evaluation to cross it within
+2-3 minutes. Result: `dtx-telemetry-service` climbed from `desired: 1` to `desired: 3`
+(the configured `max_capacity`), then settled back to `desired: 1, running: 1` a few
+minutes after the threshold was reverted, once the already-armed `cpu_low` alarm (30%
+threshold, comfortably above real idle CPU) fired.
 
 ## Note on version control
 

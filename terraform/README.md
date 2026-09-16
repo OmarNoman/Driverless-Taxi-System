@@ -13,9 +13,12 @@ plus one the NLB itself required. **Confirmed working end to end**: all 6 servic
 proven to flow all the way through event-router, SQS, and telemetry-service into
 MongoDB (see "Verify the full pipeline" below to reproduce this). Week 8c-i added a
 public API Gateway HTTP API + VPC Link fronting dispatch-service, confirmed working
-end to end (see "Verify API Gateway (8c-i)" below). Auto-scaling policies are not
-built yet, that is 8c-iii. See `ARCHITECTURE.md` for the full design rationale and
-`ROADMAP.md` for the plan/validation trace.
+end to end (see "Verify API Gateway (8c-i)" below). Week 8c-ii fixed event-router's
+MQTT subscription so it can scale safely (confirmed locally, see `ARCHITECTURE.md`).
+Week 8c-iii added CloudWatch alarms + Application Auto Scaling for event-router (CPU
+only) and telemetry-service (CPU + SQS queue depth) - see "Verify auto-scaling (8c-iii)"
+below. See `ARCHITECTURE.md` for the full design rationale and `ROADMAP.md` for the
+plan/validation trace.
 
 ## Prerequisites
 
@@ -154,6 +157,19 @@ here is idempotent.
   that route. **For a live demo:** send one throwaway warm-up request (any route) a few
   seconds before the one you actually want to show, so the connection is already warm
   when it matters.
+- **`aws_appautoscaling_target.event_router`/`.telemetry_service` fails with
+  `AccessDeniedException` on `iam:CreateServiceLinkedRole`** - this Academy account has
+  confirmed-blocked `iam:CreateRole`/`iam:PutRolePolicy` (see `iam.tf`) and Cloud Map,
+  but `CreateServiceLinkedRole` (the narrower action ECS's Application Auto Scaling
+  needs to provision `AWSServiceRoleForApplicationAutoScaling_ECSAsATarget` on first
+  use) had not been separately tested until 8c-iii - this is why 8c-iii's own commands
+  apply the 2 scalable targets in isolation first, to surface this cheaply if it
+  happens. If it does, the one-time, one-off fix is:
+  ```powershell
+  aws iam create-service-linked-role --aws-service-name ecs.application-autoscaling.amazonaws.com
+  ```
+  then re-run `terraform apply`. This is a narrow, one-time account-level action, not a
+  Terraform-managed IAM role - it does not need to be added to `iam.tf`.
 
 ## Commands
 
@@ -167,10 +183,25 @@ exists just sits retrying pulls, so push first to skip the confusion.
 cd terraform
 terraform init
 terraform validate
-terraform plan      # expect roughly 64 resources to add on a first full apply (8c-i
-                    # included): az_count=2 means 2 public + 2 private subnets rather
-                    # than 1 of each, plus the 7 API Gateway/VPC Link resources on top
-                    # of everything Week 7/8b already provisions
+terraform plan      # expect roughly 78 resources to add on a first full apply (8c-i
+                    # through 8c-iii included): az_count=2 means 2 public + 2 private
+                    # subnets rather than 1 of each, the 7 API Gateway/VPC Link
+                    # resources, and 14 auto-scaling resources (2 scalable targets, 6
+                    # policies, 6 alarms), on top of everything Week 7/8b provisions
+```
+
+**8c-iii only: apply the 2 scalable targets in isolation first**, to cheaply surface an
+`AccessDenied` on `iam:CreateServiceLinkedRole` early if this Academy account blocks it
+too (only `iam:CreateRole`/`PutRolePolicy` and Cloud Map are confirmed-blocked so far -
+this specific action has not been tested here):
+
+```powershell
+terraform apply -target=aws_appautoscaling_target.event_router -target=aws_appautoscaling_target.telemetry_service
+```
+
+If that succeeds, apply everything else:
+
+```powershell
 terraform apply
 ```
 
@@ -303,6 +334,57 @@ against the NLB target group in 8b, now reachable from a public HTTPS URL instea
 only from inside the VPC. Also worth trying one bad-input case (e.g. an unknown
 landmark name) to confirm API Gateway passes dispatch-service's own error response
 through unchanged rather than swallowing or rewriting it.
+
+### Verify auto-scaling (8c-iii)
+
+event-router scales on CPU only; telemetry-service scales on CPU and SQS queue depth
+(`dtx-telemetry-queue`) - event-router never drains that queue, only telemetry-service
+does, so a queue-depth trigger on event-router wouldn't relieve anything (see
+`ARCHITECTURE.md` for the full reasoning, this is a deliberate, documented departure
+from the plan's literal wording).
+
+Confirm the scalable targets and alarms exist:
+
+```powershell
+aws application-autoscaling describe-scalable-targets --service-namespace ecs
+aws cloudwatch describe-alarms --alarm-names (terraform output -json cloudwatch_alarm_names | ConvertFrom-Json)
+```
+
+Real load (500 simulated vehicles from Week 9) will trigger this naturally. For a quick
+demo without waiting on sustained traffic, **do not use `aws cloudwatch
+set-alarm-state`** - tried directly in this project, it changes the alarm's displayed
+state but does not reliably invoke the associated scaling policy (a manual override is
+not the same as a real state transition from CloudWatch's own evaluation, and the one
+time it was tried here the scaling effect only showed up later, stacked on top of a
+separate real transition, made a genuine test result impossible to read cleanly).
+
+The technique that is confirmed to work, twice, in this project: temporarily lower a
+threshold in `terraform/autoscaling.tf` to below the metric's *real*, currently-observed
+value, so a genuine CloudWatch evaluation crosses it on its own. telemetry-service's
+real CPU sits around 0.2-0.25% at idle - edit `telemetry_service_cpu_high`'s `threshold`
+from `70` down to `0.1`, then:
+
+```powershell
+terraform apply
+```
+
+Wait 2-3 minutes for two real 60-second CPU datapoints to cross it, then check:
+
+```powershell
+aws cloudwatch describe-alarms --alarm-names dtx-telemetry-service-cpu-high --query "MetricAlarms[0].StateValue"
+aws ecs describe-services --cluster dtx-cluster --services dtx-event-router dtx-telemetry-service --query "services[].{name:serviceName,desired:desiredCount,running:runningCount}"
+```
+
+Confirmed result in this project: the alarm entered `ALARM` and `dtx-telemetry-service`
+climbed from `desired: 1` all the way to `desired: 3` (the configured `max_capacity`).
+Revert the threshold back to `70`, `terraform apply` again, and within a few minutes the
+already-armed `dtx-telemetry-service-cpu-low` alarm (30% threshold, real CPU is far
+below it) brings it back down - confirmed in this project settling cleanly back to
+`desired: 1, running: 1`. `aws cloudwatch describe-alarms` at each stage gives the
+state-transition evidence for the report (`StateValue`, `StateReason`,
+`StateTransitionedTimestamp`). The same threshold-lowering technique works on any of
+the 6 alarms if a demo needs to show a specific one (e.g. event-router's CPU alarms, or
+telemetry-service's SQS alarms with a real, if brief, burst of messages).
 
 ### Cloud Map is blocked in this account
 
