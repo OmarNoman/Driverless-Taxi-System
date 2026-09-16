@@ -54,3 +54,8 @@ output "internal_nlb_dns_name" {
   description = "Internal service discovery (Cloud Map is blocked in this Academy account, see nlb.tf). Also Week 8c's API Gateway VPC Link target, via aws_lb_target_group.dispatch_service."
   value       = aws_lb.internal.dns_name
 }
+
+output "http_api_invoke_url" {
+  description = "Public entry point for dispatch-service's 3 routes (GET /health, GET /nodes, POST /rides), via API Gateway HTTP API + VPC Link -> internal NLB -> dispatch-service. Week 8c."
+  value       = aws_apigatewayv2_stage.default.invoke_url
+}

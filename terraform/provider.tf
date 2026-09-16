@@ -7,7 +7,7 @@ provider "aws" {
   default_tags {
     tags = {
       Project   = "sit314-driverless-taxi"
-      Week      = "7"
+      Week      = "8c"
       ManagedBy = "terraform"
     }
   }

@@ -198,6 +198,38 @@ production-grade HA.
 - **Terraform state is local**, no S3/DynamoDB backend, appropriate for a solo student
   project that gets rebuilt from scratch each session rather than shared with a team.
 
+## Week 8c - API Gateway and auto-scaling
+
+Plan says (Implementation Plan): "Using an AWS API Gateway and [the] MQTT [broker] will
+be exposed in the public subnet to securely ingest data and route external requests,"
+and (Solution Overview / Project Plan, Week 8): the Node.js microservices "utilize AWS
+auto scaling," monitoring "CPU utilization and message queue depth," spinning up
+"additional instances of the Telemetry and Event Router microservices" when a threshold
+is exceeded, scaling back down once traffic subsides. Built in three independently
+committed sub-parts (8c-i/ii/iii), the same pattern used for Week 8.
+
+**8c-i - API Gateway + VPC Link (`terraform/api-gateway.tf`):** a public regional HTTP
+API (protocol_type `HTTP`) with an `aws_apigatewayv2_vpc_link` doing a private
+`HTTP_PROXY` integration into the existing internal NLB's `dispatch_service` listener
+(`terraform/nlb.tf`, registered back in Week 8b specifically for this). No new VPC
+endpoint needed: this is a *public* API (not the `PRIVATE` endpoint type), so it runs on
+AWS-managed infrastructure outside the VPC - an `execute-api` endpoint only matters for a
+private API called from inside a VPC, and the VPC Link's own ENIs reach the NLB over the
+VPC's local route, already open via the `vpc_link`/`internal_services` security groups.
+Three explicit routes (`GET /health`, `GET /nodes`, `POST /rides`) rather than a single
+`ANY /{proxy+}` catch-all, since dispatch-service has exactly those three routes and no
+path parameters - an unrecognized method/path is rejected at the API Gateway edge instead
+of being forwarded through. `$default` auto-deploy stage, no named stage: no CI/CD or
+staged-rollout requirement anywhere in the plan, and this project's AWS lifecycle is
+apply-verify-destroy within one sitting.
+
+**Prerequisite found while building this:** `var.az_count` had to go from 1 to 2.
+AWS's HTTP API VPC Link requires subnets spanning at least 2 Availability Zones, and
+`terraform/terraform.tfvars` had `az_count = 1` (a single private subnet) since Week 7 -
+exactly the "single line change" `variables.tf`'s own comment already anticipated for a
+multi-AZ demonstration, just triggered here by a hard technical requirement rather than a
+report-writing choice.
+
 ## Note on version control
 
 If `git commit` fails with a stuck `.git/index.lock` error, delete the stale lock file

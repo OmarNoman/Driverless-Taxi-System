@@ -11,9 +11,11 @@ custom-seeded database images, and two security-group fixes Week 7 deliberately 
 plus one the NLB itself required. **Confirmed working end to end**: all 6 services reach
 `running == desired`, and a live MQTT publish through Mosquitto's public IP has been
 proven to flow all the way through event-router, SQS, and telemetry-service into
-MongoDB (see "Verify the full pipeline" below to reproduce this). No API Gateway or
-auto-scaling policies yet, that is Week 8c. See `ARCHITECTURE.md` for the full design
-rationale and `ROADMAP.md` for the plan/validation trace.
+MongoDB (see "Verify the full pipeline" below to reproduce this). Week 8c-i added a
+public API Gateway HTTP API + VPC Link fronting dispatch-service, confirmed working
+end to end (see "Verify API Gateway (8c-i)" below). Auto-scaling policies are not
+built yet, that is 8c-iii. See `ARCHITECTURE.md` for the full design rationale and
+`ROADMAP.md` for the plan/validation trace.
 
 ## Prerequisites
 
@@ -122,6 +124,36 @@ here is idempotent.
   so ordering by it can miss recently-active streams entirely. Don't chase this
   further, build the stream name directly from the live task ID instead (see "Verify
   the full pipeline" above), it's always accurate.
+- **Every ECS service shows `CannotPullContainerError: ... :week8: not found` right
+  after a fresh `terraform apply`** - expected on every session, not a bug. Every ECR
+  repo here has `force_delete = true` (`ecr.tf`), so the *previous* session's
+  `terraform destroy` deleted the repos and every image in them along with everything
+  else. A brand-new account has empty repos until you build and push all 5 images
+  again (see "Commands" below) - there is no way to skip this step between sessions.
+  ECS keeps retrying task placement on its own; once the images land, it recovers
+  within a minute or two with no extra nudge needed (`aws ecs update-service
+  --force-new-deployment` speeds it up if you want to confirm sooner).
+- **PowerShell's `curl` is not curl** - it's an alias for `Invoke-WebRequest`, which
+  doesn't understand bash's `-X`, `-H`, `-d`, or `$(...)` syntax and throws confusing
+  parameter-binding errors on all of them. Always call `curl.exe` explicitly (the real
+  curl binary that ships with Windows 10/11) for anything in this README written with
+  curl flags.
+- **`terraform output -raw http_api_invoke_url` ends in a trailing `/`, so
+  `"$BASE/health"` builds a double slash (`.../amazonaws.com//health`)** - this either
+  fails to match any route or reaches dispatch-service with a mismatched path
+  (its own `{"error":"not found"}` 404 handler, not an API Gateway error - a sign the
+  VPC Link/NLB path *is* working, just with the wrong path string). Trim it once after
+  reading the output: `$BASE = ($BASE).TrimEnd('/')`.
+- **The first request to the API Gateway URL after a period of idleness returns
+  `{"message":"Service Unavailable"}`, while an identical request sent immediately
+  afterward succeeds** - confirmed directly: two back-to-back `curl.exe` calls to the
+  exact same route, first one failed, second one (no gap) returned `{"ok":true}`. This
+  is a connection/VPC-Link warm-up cost after idle time, not a route-specific bug - it
+  had looked like it was always `/health` specifically failing purely because that was
+  always the first request sent in each test batch, not because anything is wrong with
+  that route. **For a live demo:** send one throwaway warm-up request (any route) a few
+  seconds before the one you actually want to show, so the connection is already warm
+  when it matters.
 
 ## Commands
 
@@ -135,7 +167,10 @@ exists just sits retrying pulls, so push first to skip the confusion.
 cd terraform
 terraform init
 terraform validate
-terraform plan      # expect roughly 45-50 resources to add on a first Week 8b run
+terraform plan      # expect roughly 64 resources to add on a first full apply (8c-i
+                    # included): az_count=2 means 2 public + 2 private subnets rather
+                    # than 1 of each, plus the 7 API Gateway/VPC Link resources on top
+                    # of everything Week 7/8b already provisions
 terraform apply
 ```
 
@@ -238,6 +273,36 @@ Expect `OK TAXI-001 ...` plus a confirmed SQS publish from event-router, and
 straight after publishing should briefly show `1`, then drop back to `0` once
 telemetry-service's 5-second batch flushes and deletes it, that's the delete-after-flush
 durability design (see `ARCHITECTURE.md`) working as intended, not a bug.
+
+### Verify API Gateway (8c-i)
+
+Confirms the public entry point works end to end: API Gateway HTTP API -> VPC Link ->
+internal NLB -> dispatch-service. Use `curl.exe`, not PowerShell's `curl` alias (see
+"Common errors" above), and trim the invoke URL's trailing slash before building paths
+with it:
+
+```powershell
+$BASE = (terraform output -raw http_api_invoke_url).TrimEnd('/')
+curl.exe "$BASE/health"    # expect {"ok":true} - retry once if you see "Service Unavailable" (see "Common errors")
+curl.exe "$BASE/nodes"     # expect the 21-node landmark list
+```
+
+`/rides` needs at least one vehicle with a *known position* to succeed, otherwise
+dispatch-service correctly reports none available. Publish one telemetry packet first
+(reuses the exact method from "Verify the full pipeline" above - get Mosquitto's public
+IP, then publish a TAXI-001 packet), then request a ride:
+
+```powershell
+'{"userId":1,"pickup":"Camberwell","dropoff":"St Kilda","passengers":2}' |
+  Out-File -FilePath "$env:TEMP\ride.json" -Encoding ascii -NoNewline
+curl.exe -X POST "$BASE/rides" -H "content-type: application/json" -d "@$env:TEMP\ride.json"
+```
+
+Expect a 200 with `rideId`/`vehicleId`/`route` - the same shape already proven directly
+against the NLB target group in 8b, now reachable from a public HTTPS URL instead of
+only from inside the VPC. Also worth trying one bad-input case (e.g. an unknown
+landmark name) to confirm API Gateway passes dispatch-service's own error response
+through unchanged rather than swallowing or rewriting it.
 
 ### Cloud Map is blocked in this account
 
