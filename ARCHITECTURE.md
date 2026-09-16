@@ -233,14 +233,18 @@ report-writing choice.
 Confirmed working end to end against the live account: `GET /health`, `GET /nodes`, and
 `POST /rides` (once a vehicle has a known position) all return the same responses
 already proven directly against the NLB in Week 8b, now reachable from a public HTTPS
-URL. One operational quirk found and confirmed, not a config bug: the *first* request
-to the invoke URL after a period of idleness returns `{"message":"Service
-Unavailable"}`, while an identical request sent immediately afterward succeeds -
-demonstrated directly with two back-to-back requests to the same route. This is a
-connection/VPC-Link warm-up cost after idle time, not anything wrong with a specific
-route (it had looked like `/health` specifically was broken purely because it was
-always the first request tried in each test batch). See `terraform/README.md`'s
-"Common errors" for the practical workaround.
+URL. One operational quirk found and confirmed, not a config bug: requests to the
+invoke URL intermittently return `{"message":"Service Unavailable"}`. A 30-request
+rapid-fire burst against `/health` showed roughly half failing throughout, with no
+convergence toward reliable success even by the end of the burst - ruling out an
+earlier, weaker "one-time cold start" theory. Confirmed not the backend at the same
+time: the dispatch-service NLB target stayed `healthy` and its ECS service stayed at a
+stable `desired == running`. This points at the VPC Link's own dynamically-scaling
+network capacity behaving unreliably at the low, sporadic request volumes manual
+testing produces, not at anything in this project's Terraform config - there is
+nothing here that controls that scaling directly. See `terraform/README.md`'s "Common
+errors" for the practical workaround (retry - each request has roughly even odds
+independent of the last one's result).
 
 **8c-ii - event-router's MQTT fan-out (`terraform/ecs.tf`, event-router's `environment`
 block):** found while planning the auto-scaling sub-part (8c-iii): event-router

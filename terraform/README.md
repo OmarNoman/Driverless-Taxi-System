@@ -147,16 +147,21 @@ here is idempotent.
   (its own `{"error":"not found"}` 404 handler, not an API Gateway error - a sign the
   VPC Link/NLB path *is* working, just with the wrong path string). Trim it once after
   reading the output: `$BASE = ($BASE).TrimEnd('/')`.
-- **The first request to the API Gateway URL after a period of idleness returns
-  `{"message":"Service Unavailable"}`, while an identical request sent immediately
-  afterward succeeds** - confirmed directly: two back-to-back `curl.exe` calls to the
-  exact same route, first one failed, second one (no gap) returned `{"ok":true}`. This
-  is a connection/VPC-Link warm-up cost after idle time, not a route-specific bug - it
-  had looked like it was always `/health` specifically failing purely because that was
-  always the first request sent in each test batch, not because anything is wrong with
-  that route. **For a live demo:** send one throwaway warm-up request (any route) a few
-  seconds before the one you actually want to show, so the connection is already warm
-  when it matters.
+- **Requests to the API Gateway URL intermittently return
+  `{"message":"Service Unavailable"}`, seemingly at random, on any route** - confirmed
+  with a 30-request rapid-fire burst against `/health`: roughly half failed, half
+  succeeded, with no convergence toward all-success even at the end of the burst (so
+  this is not a one-time "cold start" cost that goes away once warmed up, an earlier,
+  weaker theory this disproves). Confirmed NOT the backend: at the same time,
+  `aws elbv2 describe-target-health` showed the dispatch-service target `healthy` and
+  `aws ecs describe-services` showed it at a stable `desired == running`. This points
+  at the VPC Link's own network capacity (its ENIs scale dynamically with traffic and
+  can behave unreliably at the low, sporadic request volumes manual testing produces),
+  not a Terraform misconfiguration - there is nothing in this project's config that
+  controls that scaling directly. **Practical workaround, for a demo or a report
+  screenshot:** just retry immediately - each fresh request has roughly even odds of
+  succeeding independent of the last one's result, so a second or third attempt
+  typically gets a clean `200` to capture.
 - **`aws_appautoscaling_target.event_router`/`.telemetry_service` fails with
   `AccessDeniedException` on `iam:CreateServiceLinkedRole`** - this Academy account has
   confirmed-blocked `iam:CreateRole`/`iam:PutRolePolicy` (see `iam.tf`) and Cloud Map,
