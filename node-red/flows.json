@@ -8,12 +8,12 @@
         "env": [
             {
                 "name": "LOAD_TEST_VEHICLES",
-                "value": "100",
+                "value": "0",
                 "type": "str"
             },
             {
                 "name": "LOAD_TEST_BROKER_HOST",
-                "value": "localhost",
+                "value": "44.202.77.49",
                 "type": "str"
             }
         ]
@@ -21,6 +21,7 @@
     {
         "id": "a1d7e2f00000000f",
         "type": "mqtt-broker",
+        "z": "a1d7e2f000000001",
         "name": "local mosquitto",
         "broker": "${LOAD_TEST_BROKER_HOST}",
         "port": "1883",
