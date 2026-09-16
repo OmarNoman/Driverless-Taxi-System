@@ -147,21 +147,21 @@ here is idempotent.
   (its own `{"error":"not found"}` 404 handler, not an API Gateway error - a sign the
   VPC Link/NLB path *is* working, just with the wrong path string). Trim it once after
   reading the output: `$BASE = ($BASE).TrimEnd('/')`.
-- **Requests to the API Gateway URL intermittently return
-  `{"message":"Service Unavailable"}`, seemingly at random, on any route** - confirmed
-  with a 30-request rapid-fire burst against `/health`: roughly half failed, half
-  succeeded, with no convergence toward all-success even at the end of the burst (so
-  this is not a one-time "cold start" cost that goes away once warmed up, an earlier,
-  weaker theory this disproves). Confirmed NOT the backend: at the same time,
-  `aws elbv2 describe-target-health` showed the dispatch-service target `healthy` and
-  `aws ecs describe-services` showed it at a stable `desired == running`. This points
-  at the VPC Link's own network capacity (its ENIs scale dynamically with traffic and
-  can behave unreliably at the low, sporadic request volumes manual testing produces),
-  not a Terraform misconfiguration - there is nothing in this project's config that
-  controls that scaling directly. **Practical workaround, for a demo or a report
-  screenshot:** just retry immediately - each fresh request has roughly even odds of
-  succeeding independent of the last one's result, so a second or third attempt
-  typically gets a clean `200` to capture.
+- **Requests to the API Gateway URL intermittently returned
+  `{"message":"Service Unavailable"}`, seemingly at random, on any route** - root
+  cause found and fixed, not just a workaround. Confirmed with a 30-request rapid-fire
+  burst against `/health`: roughly half failed, half succeeded, with the
+  dispatch-service NLB target independently confirmed `healthy` the whole time, ruling
+  out the backend. Actual cause: `az_count` went from 1 to 2 for the VPC Link's own
+  2-AZ minimum (8c-i), giving `aws_lb.internal` one node per AZ - but every backend
+  service here runs exactly 1 task, landing in only one AZ, and **NLB cross-zone load
+  balancing is off by default**, so the AZ without a local target had zero healthy
+  targets to route to. Roughly half of all requests, whichever happened to route via
+  the "empty" AZ, failed - matching the observed rate exactly. Fixed with one line:
+  `enable_cross_zone_load_balancing = true` on `aws_lb.internal` (`terraform/nlb.tf`).
+  If you're seeing this on a state predating that fix, `terraform apply` it and re-test
+  rather than retrying around it. Verified: the same 30-request burst against `/health`
+  that showed ~50% failures before the fix returned 60/60 successes (two runs) after it.
 - **`aws cloudwatch get-metric-statistics` returns `"Datapoints": []` even though the
   service is definitely running and under load** - almost certainly a PowerShell
   timezone bug in the `--start-time`/`--end-time` arguments, not missing data.
@@ -342,7 +342,7 @@ with it:
 
 ```powershell
 $BASE = (terraform output -raw http_api_invoke_url).TrimEnd('/')
-curl.exe "$BASE/health"    # expect {"ok":true} - retry once if you see "Service Unavailable" (see "Common errors")
+curl.exe "$BASE/health"    # expect {"ok":true} - see "Common errors" if this ever returns "Service Unavailable" (fixed by enable_cross_zone_load_balancing, but worth knowing if it regresses)
 curl.exe "$BASE/nodes"     # expect the 21-node landmark list
 ```
 

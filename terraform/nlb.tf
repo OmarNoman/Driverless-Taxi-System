@@ -23,6 +23,16 @@ resource "aws_lb" "internal" {
   load_balancer_type = "network"
   subnets            = aws_subnet.private[*].id
 
+  # Cross-zone load balancing is off by default for NLBs. Since az_count went from 1
+  # to 2 for the API Gateway VPC Link (Week 8c-i), this NLB now has one node per AZ,
+  # but every backend service here runs exactly 1 task, landing in only one AZ - with
+  # cross-zone off, the other AZ's node has zero local healthy targets, so roughly half
+  # of all requests (whichever happen to route via the "empty" AZ) fail. Confirmed
+  # directly: a 30-request burst against the API Gateway -> VPC Link -> this NLB ->
+  # dispatch-service path showed a persistent ~50% failure rate with no convergence,
+  # while the target itself was independently confirmed healthy the whole time.
+  enable_cross_zone_load_balancing = true
+
   tags = {
     Name = "${var.project_name}-internal-nlb"
   }

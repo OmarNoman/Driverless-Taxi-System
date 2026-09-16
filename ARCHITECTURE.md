@@ -233,18 +233,21 @@ report-writing choice.
 Confirmed working end to end against the live account: `GET /health`, `GET /nodes`, and
 `POST /rides` (once a vehicle has a known position) all return the same responses
 already proven directly against the NLB in Week 8b, now reachable from a public HTTPS
-URL. One operational quirk found and confirmed, not a config bug: requests to the
-invoke URL intermittently return `{"message":"Service Unavailable"}`. A 30-request
-rapid-fire burst against `/health` showed roughly half failing throughout, with no
-convergence toward reliable success even by the end of the burst - ruling out an
-earlier, weaker "one-time cold start" theory. Confirmed not the backend at the same
-time: the dispatch-service NLB target stayed `healthy` and its ECS service stayed at a
-stable `desired == running`. This points at the VPC Link's own dynamically-scaling
-network capacity behaving unreliably at the low, sporadic request volumes manual
-testing produces, not at anything in this project's Terraform config - there is
-nothing here that controls that scaling directly. See `terraform/README.md`'s "Common
-errors" for the practical workaround (retry - each request has roughly even odds
-independent of the last one's result).
+URL. One operational quirk found, diagnosed, and fixed: requests to the invoke URL were
+intermittently returning `{"message":"Service Unavailable"}` - a 30-request rapid-fire
+burst against `/health` showed roughly half failing throughout, with the
+dispatch-service NLB target independently confirmed `healthy` and its ECS service at a
+stable `desired == running` the whole time, ruling out the backend. Root cause:
+`az_count` went from 1 to 2 for the VPC Link's own 2-AZ minimum (8c-i), giving
+`aws_lb.internal` one node per AZ - but every backend service here runs exactly 1 task,
+landing in only one AZ, and NLB cross-zone load balancing is **off by default**, so the
+AZ without a local target had zero healthy targets to route to. Roughly half of all
+requests, whichever happened to route via the "empty" AZ, failed - matching the
+observed ~50% rate exactly. Fixed with one line:
+`enable_cross_zone_load_balancing = true` on `aws_lb.internal` (`terraform/nlb.tf`).
+Verified against the live account: the same 30-request burst against `/health`, run
+twice after applying the fix, returned 60/60 `200`s - zero failures, where before it
+was a consistent ~50%.
 
 **8c-ii - event-router's MQTT fan-out (`terraform/ecs.tf`, event-router's `environment`
 block):** found while planning the auto-scaling sub-part (8c-iii): event-router
