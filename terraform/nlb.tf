@@ -132,3 +132,27 @@ resource "aws_lb_listener" "dispatch_service" {
     target_group_arn = aws_lb_target_group.dispatch_service.arn
   }
 }
+
+# 6.4HD - Redis cache-aside layer in front of dispatch-service's vehicle-lookup query.
+resource "aws_lb_target_group" "redis" {
+  name        = "${var.project_name}-redis-tg"
+  port        = 6379
+  protocol    = "TCP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
+
+  tags = {
+    Name = "${var.project_name}-redis-tg"
+  }
+}
+
+resource "aws_lb_listener" "redis" {
+  load_balancer_arn = aws_lb.internal.arn
+  port              = 6379
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.redis.arn
+  }
+}

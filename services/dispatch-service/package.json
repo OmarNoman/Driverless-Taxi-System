@@ -10,6 +10,7 @@
         "test": "node --test \"src/**/*.test.js\""
     },
     "dependencies": {
+        "ioredis": "^5.4.1",
         "mongodb": "^6.10.0",
         "mqtt": "^5.10.1",
         "pg": "^8.13.1"

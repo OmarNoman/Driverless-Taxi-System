@@ -128,6 +128,24 @@ resource "aws_security_group" "database" {
     cidr_blocks = [var.vpc_cidr]
   }
 
+  # 6.4HD - Redis cache-aside layer. Same SG as postgres/mongo: it's another backing
+  # store reachable only from the internal services, sitting behind the same internal NLB.
+  ingress {
+    description     = "Redis from internal services"
+    from_port       = 6379
+    to_port         = 6379
+    protocol        = "tcp"
+    security_groups = [aws_security_group.internal_services.id]
+  }
+
+  ingress {
+    description = "Redis from the internal NLB health checks"
+    from_port   = 6379
+    to_port     = 6379
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
   egress {
     description = "all outbound"
     from_port   = 0

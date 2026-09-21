@@ -42,6 +42,11 @@ resource "aws_cloudwatch_log_group" "mosquitto" {
   retention_in_days = 1
 }
 
+resource "aws_cloudwatch_log_group" "redis" {
+  name              = "/ecs/${var.project_name}-redis"
+  retention_in_days = 1
+}
+
 # --- Mosquitto: public subnet, pulls eclipse-mosquitto:2 straight from Docker Hub ---
 
 resource "aws_ecs_task_definition" "mosquitto" {
@@ -270,6 +275,75 @@ resource "aws_ecs_service" "mongo" {
   }
 }
 
+# --- Redis: private subnet, cache-aside layer for dispatch-service (6.4HD), no persistence ---
+
+resource "aws_ecs_task_definition" "redis" {
+  family                   = "${var.project_name}-redis"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = data.aws_iam_role.lab_role.arn
+  task_role_arn            = data.aws_iam_role.lab_role.arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name      = "redis"
+      image     = "${aws_ecr_repository.redis.repository_url}:week9"
+      essential = true
+      # --maxmemory bounds memory since this is a pure cache with no eviction budget
+      # otherwise; allkeys-lru is the right eviction policy for a cache-aside workload
+      # where every key is equally disposable. No persistence flags needed - Fargate's
+      # ephemeral storage is fine for a cache that's rebuilt from Postgres/Mongo on miss.
+      command      = ["redis-server", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
+      portMappings = [{ containerPort = 6379, protocol = "tcp" }]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.redis.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "redis"
+        }
+      }
+    }
+  ])
+
+  tags = {
+    Name = "${var.project_name}-redis"
+  }
+}
+
+resource "aws_ecs_service" "redis" {
+  name            = "${var.project_name}-redis"
+  cluster         = aws_ecs_cluster.dtx.id
+  task_definition = aws_ecs_task_definition.redis.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.private[*].id
+    security_groups  = [aws_security_group.database.id, aws_security_group.internal_services.id]
+    assign_public_ip = false
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.redis.arn
+    container_name   = "redis"
+    container_port   = 6379
+  }
+
+  depends_on = [aws_lb_listener.redis]
+
+  tags = {
+    Name = "${var.project_name}-redis"
+  }
+}
+
 # --- event-router: private subnet, no inbound port, SQS-enabled ---
 
 resource "aws_ecs_task_definition" "event_router" {
@@ -444,6 +518,7 @@ resource "aws_ecs_task_definition" "dispatch_service" {
         { name = "HTTP_PORT", value = "8080" },
         { name = "MQTT_URL", value = "mqtt://${aws_lb.internal.dns_name}:1883" },
         { name = "MONGO_URL", value = "mongodb://${aws_lb.internal.dns_name}:27017" },
+        { name = "REDIS_URL", value = "redis://${aws_lb.internal.dns_name}:6379" },
       ]
       # Resolved by ECS from SSM Parameter Store at container start (secrets.tf) - the
       # container still just sees a plain PG_URL env var, no application code change.

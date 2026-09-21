@@ -6,12 +6,27 @@
 
 import pg from "pg";
 import { MongoClient } from "mongodb";
+import Redis from "ioredis";
 
 const { Pool } = pg;
 
-export function createStore({ pgUrl, mongoUrl, mongoDb, mongoCollection = "telemetry" }) {
+// Cache-aside TTL for availableCandidates(). assignTrip's guarded UPDATE (status =
+// 'available') already makes a stale read safe - the worst case is a 409 the client
+// already handles as "vehicle just taken, retry" - so this TTL only bounds how often
+// that retry path fires, not correctness.
+const CACHE_TTL_S = 3;
+
+// Highest passenger_seats value any dispatchable vehicle can have (db/postgres/seed-fleet.sql:
+// sedan 4, van 7; the bus is 40 seats but is never 'available'). The fleet is this tiny for
+// the whole project, so explicit key enumeration on invalidation is fine here - a demo-scale
+// simplification, not a pattern that would survive a real fleet size.
+const MAX_CACHEABLE_SEATS = 7;
+
+export function createStore({ pgUrl, mongoUrl, mongoDb, mongoCollection = "telemetry", redisUrl }) {
   const pool = new Pool({ connectionString: pgUrl });
   const mongo = new MongoClient(mongoUrl);
+  const redis = new Redis(redisUrl);
+  redis.on("error", (e) => console.error("[store] redis error:", e.message));
   let telemetry;
 
   return {
@@ -24,6 +39,7 @@ export function createStore({ pgUrl, mongoUrl, mongoDb, mongoCollection = "telem
     async close() {
       await pool.end();
       await mongo.close();
+      redis.disconnect();
     },
 
     async userExists(userId) {
@@ -33,14 +49,22 @@ export function createStore({ pgUrl, mongoUrl, mongoDb, mongoCollection = "telem
 
     // Available vehicles that can seat the party, joined with their latest known position.
     // Capacity is a hard filter here; the rest of the scoring happens in select.js.
+    // Cache-aside: a hit skips both the Postgres and Mongo round trips entirely.
     async availableCandidates(minSeats = 1) {
+      const cacheKey = `avail:${minSeats}`;
+      const cached = await redis.get(cacheKey).catch(() => null);
+      if (cached !== null) return JSON.parse(cached);
+
       const r = await pool.query(
         `SELECT vehicle_id, vehicle_type, passenger_seats
            FROM vehicles
           WHERE status = 'available' AND passenger_seats >= $1`,
         [minSeats]
       );
-      if (r.rows.length === 0) return [];
+      if (r.rows.length === 0) {
+        await redis.setex(cacheKey, CACHE_TTL_S, "[]").catch(() => {});
+        return [];
+      }
 
       const meta = new Map(r.rows.map((x) => [x.vehicle_id, x]));
       const docs = await telemetry
@@ -48,7 +72,7 @@ export function createStore({ pgUrl, mongoUrl, mongoDb, mongoCollection = "telem
         .project({ _id: 0, vehicleID: 1, vehicleType: 1, coordinates: 1, batteryLevel: 1, currentState: 1 })
         .toArray();
 
-      return docs.map((d) => ({
+      const candidates = docs.map((d) => ({
         vehicleId: d.vehicleID,
         vehicleType: d.vehicleType ?? meta.get(d.vehicleID).vehicle_type,
         seats: meta.get(d.vehicleID).passenger_seats,
@@ -57,6 +81,9 @@ export function createStore({ pgUrl, mongoUrl, mongoDb, mongoCollection = "telem
         batteryLevel: d.batteryLevel,
         currentState: d.currentState,
       }));
+
+      await redis.setex(cacheKey, CACHE_TTL_S, JSON.stringify(candidates)).catch(() => {});
+      return candidates;
     },
 
     // Record the trip and mark the vehicle on_trip atomically. Returns null if the vehicle
@@ -82,6 +109,8 @@ export function createStore({ pgUrl, mongoUrl, mongoDb, mongoCollection = "telem
           [userId, vehicleId, pickup.lat, pickup.lon, dropoff.lat, dropoff.lon, tripDistanceKm]
         );
         await client.query("COMMIT");
+        const keys = Array.from({ length: MAX_CACHEABLE_SEATS }, (_, i) => `avail:${i + 1}`);
+        await redis.del(...keys).catch(() => {});
         return { rideId: ins.rows[0].id, assignedAt: ins.rows[0].assigned_at };
       } catch (e) {
         await client.query("ROLLBACK");

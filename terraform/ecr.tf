@@ -75,3 +75,18 @@ resource "aws_ecr_repository" "mongo_seeded" {
     Name = "${var.project_name}-mongo-seeded"
   }
 }
+
+# 6.4HD - Redis cache-aside layer in front of dispatch-service's vehicle-lookup query.
+resource "aws_ecr_repository" "redis" {
+  name                 = "${var.project_name}-redis"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = {
+    Name = "${var.project_name}-redis"
+  }
+}

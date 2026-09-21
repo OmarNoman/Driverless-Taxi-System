@@ -19,6 +19,12 @@ POST /rides ──▶ dispatch-service ──┬─▶ PostgreSQL  rides (+ vehi
   to the pickup node; score = `roadKm + batteryPenaltyKm + sizePenaltyKm`. Lowest wins.
 - **Trip record + `on_trip` flip** happen in one transaction; a guarded `UPDATE` means a
   vehicle can't be dispatched twice concurrently.
+- **Cache-aside on `availableCandidates`** ([store.js](src/store.js), 6.4HD): a Redis
+  `GET avail:<minSeats>` short-circuits both the Postgres and Mongo round trips on a hit;
+  a miss runs the query as before and `SETEX`s the result for 3s. `assignTrip` deletes the
+  small fixed set of `avail:1..7` keys after a successful commit. The guarded `UPDATE`
+  above already makes a stale read safe (worst case is the existing 409 retry path), so the
+  TTL only bounds how often that retry fires, not correctness.
 - **Response** is synchronous (a deliberate design decision, no live push or polling): the assigned vehicle,
   ETA, and the suburb route come straight back. The dispatch command carries the node-id
   route for the simulator to drive.
@@ -41,6 +47,7 @@ npm start
 | `PG_URL`        | `postgresql://dtx:dtx_dev_pw@localhost:5432/driverless_taxi` |
 | `MONGO_URL`     | `mongodb://localhost:27017`                                |
 | `MONGO_DB`      | `driverless_taxi`                                          |
+| `REDIS_URL`     | `redis://localhost:6379`                                   |
 | `AVG_SPEED_KMH` | `30` (ETA estimate only)                                   |
 | `GRAPH_PATH`    | `../../../graph/melbourne.json`                            |
 

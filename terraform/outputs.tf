@@ -30,6 +30,7 @@ output "ecr_repository_urls" {
     dispatch_service  = aws_ecr_repository.dispatch_service.repository_url
     postgres_seeded   = aws_ecr_repository.postgres_seeded.repository_url
     mongo_seeded      = aws_ecr_repository.mongo_seeded.repository_url
+    redis             = aws_ecr_repository.redis.repository_url
   }
 }
 

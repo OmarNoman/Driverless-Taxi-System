@@ -4,8 +4,8 @@ Provisions and runs the whole system on AWS:
 
 - A VPC with a public subnet for Mosquitto and a private subnet for the three Node.js
   services and both databases, VPC endpoints instead of a NAT Gateway.
-- An ECS Fargate cluster running all 6 things (event-router, telemetry-service,
-  dispatch-service, Postgres, Mongo, Mosquitto).
+- An ECS Fargate cluster running all 7 things (event-router, telemetry-service,
+  dispatch-service, Postgres, Mongo, Mosquitto, Redis).
 - An internal Network Load Balancer for service-to-service discovery (one listener/target
   group per port), used instead of AWS Cloud Map, which is blocked in this AWS Academy
   Learner Lab account.
@@ -16,8 +16,10 @@ Provisions and runs the whole system on AWS:
   telemetry-service (CPU and SQS queue depth), scaling each between 1 and 3 tasks.
 - The Postgres password and connection string stored in AWS SSM Parameter Store as
   `SecureString` parameters rather than plaintext Terraform variables.
-- 5 ECR repositories: one per Node.js service, plus one each for the custom-seeded
-  Postgres and Mongo images.
+- 6 ECR repositories: one per Node.js service, one each for the custom-seeded Postgres
+  and Mongo images, and one for Redis.
+- A Redis cache-aside layer (6.4HD) in front of dispatch-service's vehicle-lookup query,
+  on the internal NLB alongside Postgres/Mongo/Mosquitto.
 
 ## Prerequisites
 
@@ -51,34 +53,10 @@ idempotent.
 
 ## Deploy
 
-Build and push all 5 images (3 Node.js services + 2 custom-seeded databases), all
-tagged `:week8` to match what `terraform/ecs.tf`'s task definitions reference. Do this
-before `terraform apply`, since a service that comes up before its image exists just
-sits retrying pulls:
-
-```powershell
-cd <repo root>
-docker build -f services/event-router/Dockerfile -t dtx-event-router:week8 .
-docker build -f services/dispatch-service/Dockerfile -t dtx-dispatch-service:week8 .
-docker build -t dtx-telemetry-service:week8 services/telemetry-service
-docker build -t dtx-postgres-seeded:week8 db/postgres
-docker build -f db/mongo/Dockerfile -t dtx-mongo-seeded:week8 .
-
-$tokenFile = "$env:TEMP\ecr-token.txt"
-aws ecr get-login-password --region us-east-1 | Out-File -FilePath $tokenFile -Encoding ascii -NoNewline
-cmd /c "docker login --username AWS --password-stdin <account-id>.dkr.ecr.us-east-1.amazonaws.com < `"$tokenFile`""
-Remove-Item $tokenFile
-
-foreach ($name in "event-router","dispatch-service","telemetry-service","postgres-seeded","mongo-seeded") {
-  docker tag "dtx-$name`:week8" "<account-id>.dkr.ecr.us-east-1.amazonaws.com/dtx-$name`:week8"
-  docker push "<account-id>.dkr.ecr.us-east-1.amazonaws.com/dtx-$name`:week8"
-}
-```
-
-(`terraform output ecr_repository_urls` prints the exact repository URLs once applied
-at least once)
-
-Then apply:
+**Apply first, then push images.** The ECR repositories themselves are created by
+Terraform (`terraform/ecr.tf`); on a fresh account (or after a previous session's
+`terraform destroy`, which deletes them since they're `force_delete = true`) they don't
+exist yet, so a push before applying fails with "repository does not exist".
 
 ```powershell
 cd terraform
@@ -88,20 +66,60 @@ terraform plan
 terraform apply
 ```
 
+ECS services will initially fail to pull images (`CannotPullContainerError`) since the
+repos are empty right after a fresh apply - expected, not a bug. They recover on their
+own within a minute or two of the push below landing.
+
+Build and push all 5 base-project images (3 Node.js services + 2 custom-seeded
+databases), all tagged `:week8` to match what `terraform/ecs.tf`'s task definitions
+reference, from the repo root (`cd ..` if you're still in `terraform/`):
+
+```powershell
+docker build -f services/event-router/Dockerfile -t dtx-event-router:week8 .
+docker build -f services/dispatch-service/Dockerfile -t dtx-dispatch-service:week8 .
+docker build -t dtx-telemetry-service:week8 services/telemetry-service
+docker build -t dtx-postgres-seeded:week8 db/postgres
+docker build -f db/mongo/Dockerfile -t dtx-mongo-seeded:week8 .
+
+$accountId = aws sts get-caller-identity --query Account --output text
+
+$tokenFile = "$env:TEMP\ecr-token.txt"
+aws ecr get-login-password --region us-east-1 | Out-File -FilePath $tokenFile -Encoding ascii -NoNewline
+cmd /c "docker login --username AWS --password-stdin $accountId.dkr.ecr.us-east-1.amazonaws.com < `"$tokenFile`""
+Remove-Item $tokenFile
+
+foreach ($name in "event-router","dispatch-service","telemetry-service","postgres-seeded","mongo-seeded") {
+  docker tag "dtx-$name`:week8" "$accountId.dkr.ecr.us-east-1.amazonaws.com/dtx-$name`:week8"
+  docker push "$accountId.dkr.ecr.us-east-1.amazonaws.com/dtx-$name`:week8"
+}
+```
+
+Then build and push the 6.4HD Redis image, tagged `:week9` to match
+`terraform/ecs.tf`'s `aws_ecs_task_definition.redis`:
+
+```powershell
+docker build -t dtx-redis:week9 db/redis
+docker tag dtx-redis:week9 "$accountId.dkr.ecr.us-east-1.amazonaws.com/dtx-redis:week9"
+docker push "$accountId.dkr.ecr.us-east-1.amazonaws.com/dtx-redis:week9"
+```
+
+(`terraform output ecr_repository_urls` also prints the exact repository URLs, useful
+to double check `$accountId` resolved correctly)
+
 ## Verify
 
 Confirm every ECS service is up and every NLB target is healthy:
 
 ```powershell
-aws ecs describe-services --cluster dtx-cluster --services dtx-event-router dtx-telemetry-service dtx-dispatch-service dtx-postgres dtx-mongo dtx-mosquitto --query "services[].{name:serviceName,desired:desiredCount,running:runningCount,pending:pendingCount}"
+aws ecs describe-services --cluster dtx-cluster --services dtx-event-router dtx-telemetry-service dtx-dispatch-service dtx-postgres dtx-mongo dtx-mosquitto dtx-redis --query "services[].{name:serviceName,desired:desiredCount,running:runningCount,pending:pendingCount}"
 
-foreach ($tg in "dtx-postgres-tg","dtx-mongo-tg","dtx-mosquitto-tg","dtx-dispatch-tg") {
+foreach ($tg in "dtx-postgres-tg","dtx-mongo-tg","dtx-mosquitto-tg","dtx-dispatch-tg","dtx-redis-tg") {
   $arn = aws elbv2 describe-target-groups --names $tg --query "TargetGroups[0].TargetGroupArn" --output text
   "$tg`: $(aws elbv2 describe-target-health --target-group-arn $arn --query 'TargetHealthDescriptions[].TargetHealth.State' --output text)"
 }
 ```
 
-`running == desired` for all 6 services and `healthy` for all 4 target groups confirms
+`running == desired` for all 7 services and `healthy` for all 5 target groups confirms
 the deployment and internal service discovery are both working.
 
 ### Verify the API Gateway
@@ -147,7 +165,7 @@ terraform destroy
 ```
 
 This is not optional. Closing the Lab browser tab does not stop billing; the interface
-VPC endpoints, the NLB, the API Gateway, and all 6 running Fargate tasks keep costing
+VPC endpoints, the NLB, the API Gateway, and all 7 running Fargate tasks keep costing
 money against the fixed, non-resetting Lab budget until they are actually destroyed.
 
 If the Lab resets your whole account between sessions (some course configurations do
@@ -156,8 +174,9 @@ a session too, not just before ending it, to catch drift early.
 
 ## Budget
 
-With all 6 Fargate tasks running (steady state, no auto-scaling triggered), total cost
-is roughly $0.15-0.16/hr: Fargate vCPU/GB-hour pricing dominates, the VPC endpoints and
+With all 7 Fargate tasks running (steady state, no auto-scaling triggered), total cost
+is roughly $0.17-0.18/hr (Redis's 256 CPU / 512 MB task adds a small amount to the base
+project's $0.15-0.16/hr): Fargate vCPU/GB-hour pricing dominates, the VPC endpoints and
 NLB add a small fixed idle cost, and SQS/CloudWatch stay effectively free at this demo's
 message volume. Leaving it up overnight by accident is a few dollars, not a rounding
 error, so `terraform destroy` matters every session.

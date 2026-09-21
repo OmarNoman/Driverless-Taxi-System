@@ -27,10 +27,11 @@ const PG_URL =
   process.env.PG_URL || "postgresql://dtx:dtx_dev_pw@localhost:5432/driverless_taxi";
 const MONGO_URL = process.env.MONGO_URL || "mongodb://localhost:27017";
 const MONGO_DB = process.env.MONGO_DB || "driverless_taxi";
+const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 const AVG_SPEED_KMH = Number(process.env.AVG_SPEED_KMH || 30);
 
 const graph = loadGraph();
-const store = createStore({ pgUrl: PG_URL, mongoUrl: MONGO_URL, mongoDb: MONGO_DB });
+const store = createStore({ pgUrl: PG_URL, mongoUrl: MONGO_URL, mongoDb: MONGO_DB, redisUrl: REDIS_URL });
 await store.connect();
 console.log(`[dispatch] graph ${graph.names().length} nodes; connected to postgres + mongo`);
 
