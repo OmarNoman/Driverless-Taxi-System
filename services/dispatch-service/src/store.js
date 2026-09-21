@@ -49,11 +49,17 @@ export function createStore({ pgUrl, mongoUrl, mongoDb, mongoCollection = "telem
 
     // Available vehicles that can seat the party, joined with their latest known position.
     // Capacity is a hard filter here; the rest of the scoring happens in select.js.
-    // Cache-aside: a hit skips both the Postgres and Mongo round trips entirely.
+    // Cache-aside: a hit skips both the Postgres and Mongo round trips entirely. Logged
+    // (not just returned) so a hit ratio can be computed from CloudWatch Logs under load,
+    // the same way Mellati et al. report theirs.
     async availableCandidates(minSeats = 1) {
       const cacheKey = `avail:${minSeats}`;
       const cached = await redis.get(cacheKey).catch(() => null);
-      if (cached !== null) return JSON.parse(cached);
+      if (cached !== null) {
+        console.log(`[store] cache hit ${cacheKey}`);
+        return JSON.parse(cached);
+      }
+      console.log(`[store] cache miss ${cacheKey}`);
 
       const r = await pool.query(
         `SELECT vehicle_id, vehicle_type, passenger_seats
