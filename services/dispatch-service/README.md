@@ -25,6 +25,11 @@ POST /rides ──▶ dispatch-service ──┬─▶ PostgreSQL  rides (+ vehi
   small fixed set of `avail:1..7` keys after a successful commit. The guarded `UPDATE`
   above already makes a stale read safe (worst case is the existing 409 retry path), so the
   TTL only bounds how often that retry fires, not correctness.
+- **Postgres read replica** ([store.js](src/store.js), 6.4HD): `availableCandidates`'s
+  Postgres query runs against `readPool`, a second connection pool built from the optional
+  `PG_READ_URL` env var (AWS only - unset locally, so `readPool` is just `pool` there,
+  zero behavior change). `assignTrip`'s `UPDATE`/`INSERT` always stay on the primary
+  `pool`, untouched.
 - **Response** is synchronous (a deliberate design decision, no live push or polling): the assigned vehicle,
   ETA, and the suburb route come straight back. The dispatch command carries the node-id
   route for the simulator to drive.
@@ -45,6 +50,7 @@ npm start
 | `HTTP_PORT`     | `8080` (clashes with Jenkins on this machine, use `8090`) |
 | `MQTT_URL`      | `mqtt://localhost:1883`                                    |
 | `PG_URL`        | `postgresql://dtx:dtx_dev_pw@localhost:5432/driverless_taxi` |
+| `PG_READ_URL`   | unset (falls back to `PG_URL` - no read replica locally)   |
 | `MONGO_URL`     | `mongodb://localhost:27017`                                |
 | `MONGO_DB`      | `driverless_taxi`                                          |
 | `REDIS_URL`     | `redis://localhost:6379`                                   |

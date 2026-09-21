@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1
+#
+# 6.4HD - PostgreSQL streaming-replication standby. No COPY of schema/seeds: a replica
+# gets ALL its data via pg_basebackup from the primary (replica-entrypoint.sh), not
+# initdb. Build context is this directory (db/postgres), matching the primary's own
+# Dockerfile:
+#   docker build -f db/postgres/Dockerfile.replica -t dtx-postgres-seeded:week9-replica db/postgres
+#
+# ENTRYPOINT is replaced entirely (not just CMD) - see replica-entrypoint.sh for why.
+
+FROM postgres:16
+
+COPY replica-entrypoint.sh /usr/local/bin/replica-entrypoint.sh
+RUN chmod +x /usr/local/bin/replica-entrypoint.sh
+
+ENTRYPOINT ["replica-entrypoint.sh"]

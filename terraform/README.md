@@ -4,8 +4,9 @@ Provisions and runs the whole system on AWS:
 
 - A VPC with a public subnet for Mosquitto and a private subnet for the three Node.js
   services and both databases, VPC endpoints instead of a NAT Gateway.
-- An ECS Fargate cluster running all 8 things (event-router, telemetry-service,
-  dispatch-service, Postgres, Mongo primary, Mongo secondary, Mosquitto, Redis).
+- An ECS Fargate cluster running all 9 things (event-router, telemetry-service,
+  dispatch-service, Postgres primary, Postgres replica, Mongo primary, Mongo secondary,
+  Mosquitto, Redis).
 - An internal Network Load Balancer for service-to-service discovery (one listener/target
   group per port), used instead of AWS Cloud Map, which is blocked in this AWS Academy
   Learner Lab account.
@@ -24,6 +25,12 @@ Provisions and runs the whole system on AWS:
   primary, on its own NLB listener (port 27018). dispatch-service (the system's only
   Mongo reader) connects with `readPreference=secondaryPreferred`, offloading
   `telemetry` reads onto the secondary. telemetry-service (writes only) is untouched.
+- A PostgreSQL read replica (6.4HD): real streaming replication (`pg_basebackup` +
+  WAL streaming, not a managed-service toggle) on its own NLB listener (port 5433).
+  dispatch-service's `availableCandidates()` reads from it via `PG_READ_URL`; every write
+  (`assignTrip`'s `UPDATE`/`INSERT`) always goes to the primary. Unlike the Mongo replica
+  set, no manual initialization step - the replica bootstraps itself automatically on
+  every container start via `pg_basebackup`.
 
 ## Prerequisites
 
@@ -116,6 +123,22 @@ docker tag dtx-mongo-seeded:week9-secondary "$accountId.dkr.ecr.us-east-1.amazon
 docker push "$accountId.dkr.ecr.us-east-1.amazonaws.com/dtx-mongo-seeded:week9-secondary"
 ```
 
+And the 6.4HD PostgreSQL read-replica image, tagged `:week9-replica` and pushed to the
+*existing* `dtx-postgres-seeded` repo (same repo as the primary, different tag; build
+context is `db/postgres`, matching the primary's own Dockerfile):
+
+```powershell
+docker build -f db/postgres/Dockerfile.replica -t dtx-postgres-seeded:week9-replica db/postgres
+docker tag dtx-postgres-seeded:week9-replica "$accountId.dkr.ecr.us-east-1.amazonaws.com/dtx-postgres-seeded:week9-replica"
+docker push "$accountId.dkr.ecr.us-east-1.amazonaws.com/dtx-postgres-seeded:week9-replica"
+```
+
+The primary's own image also changed (`db/postgres/enable-replication.sh` baked in) but
+keeps the same `:week8` tag - rebuild and push it too (same command as the base-project
+build above, `docker build -t dtx-postgres-seeded:week8 db/postgres`), then
+`--force-new-deployment` it per the note below, since Terraform won't detect a same-tag
+content change on its own.
+
 (`terraform output ecr_repository_urls` also prints the exact repository URLs, useful
 to double check `$accountId` resolved correctly)
 
@@ -136,16 +159,47 @@ iterating on `store.js` for Technique 1 and on `init-telemetry.sh` for Technique
 Confirm every ECS service is up and every NLB target is healthy:
 
 ```powershell
-aws ecs describe-services --cluster dtx-cluster --services dtx-event-router dtx-telemetry-service dtx-dispatch-service dtx-postgres dtx-mongo dtx-mongo-secondary dtx-mosquitto dtx-redis --query "services[].{name:serviceName,desired:desiredCount,running:runningCount,pending:pendingCount}"
+aws ecs describe-services --cluster dtx-cluster --services dtx-event-router dtx-telemetry-service dtx-dispatch-service dtx-postgres dtx-postgres-replica dtx-mongo dtx-mongo-secondary dtx-mosquitto dtx-redis --query "services[].{name:serviceName,desired:desiredCount,running:runningCount,pending:pendingCount}"
 
-foreach ($tg in "dtx-postgres-tg","dtx-mongo-tg","dtx-mongo-secondary-tg","dtx-mosquitto-tg","dtx-dispatch-tg","dtx-redis-tg") {
+foreach ($tg in "dtx-postgres-tg","dtx-postgres-replica-tg","dtx-mongo-tg","dtx-mongo-secondary-tg","dtx-mosquitto-tg","dtx-dispatch-tg","dtx-redis-tg") {
   $arn = aws elbv2 describe-target-groups --names $tg --query "TargetGroups[0].TargetGroupArn" --output text
   "$tg`: $(aws elbv2 describe-target-health --target-group-arn $arn --query 'TargetHealthDescriptions[].TargetHealth.State' --output text)"
 }
 ```
 
-`running == desired` for all 8 services and `healthy` for all 6 target groups confirms
+`running == desired` for all 9 services and `healthy` for all 7 target groups confirms
 the deployment and internal service discovery are both working.
+
+Unlike the Mongo replica set, there's no manual initialization step here -
+`replica-entrypoint.sh` runs `pg_basebackup` automatically as soon as the replica task
+starts, so `dtx-postgres-replica-tg` going `healthy` above already means it's fully
+bootstrapped and streaming. Confirm it directly from the primary's side:
+
+```powershell
+$pgCmd = "PGPASSWORD=`$POSTGRES_PASSWORD psql -h $nlb -p 5432 -U dtx -d driverless_taxi -c 'SELECT client_addr, state, sync_state FROM pg_stat_replication;'"
+$overrides = @{
+  containerOverrides = @(
+    @{
+      name    = "postgres"
+      command = @("sh", "-c", $pgCmd)
+    }
+  )
+} | ConvertTo-Json -Depth 5
+$overrides | Out-File -FilePath "$env:TEMP\pg-replstatus-overrides.json" -Encoding ascii -NoNewline
+
+aws ecs run-task --cluster dtx-cluster --task-definition dtx-postgres --launch-type FARGATE `
+  --network-configuration "file://$env:TEMP\rs-netconfig.json" `
+  --overrides "file://$env:TEMP\pg-replstatus-overrides.json"
+```
+
+(Needs `$nlb` and `$env:TEMP\rs-netconfig.json` from the "Initialize the MongoDB replica
+set" section below - run that section's first code block first if you haven't this
+session.) Check the resulting task's log stream for one row with `state = streaming`,
+`sync_state = async`. For a genuine replication-lag number under load (rather than the
+near-zero idle figure this tiny dataset gives), swap the `-c` query for
+`SELECT client_addr, replay_lag FROM pg_stat_replication;` and run it during a burst of
+concurrent `assignTrip` writes (a load test against `/rides`, see
+[`node-red/`](../node-red)).
 
 ### Initialize the MongoDB replica set (one-time, manual)
 
@@ -413,7 +467,7 @@ terraform destroy
 ```
 
 This is not optional. Closing the Lab browser tab does not stop billing; the interface
-VPC endpoints, the NLB, the API Gateway, and all 8 running Fargate tasks keep costing
+VPC endpoints, the NLB, the API Gateway, and all 9 running Fargate tasks keep costing
 money against the fixed, non-resetting Lab budget until they are actually destroyed.
 
 If the Lab resets your whole account between sessions (some course configurations do
@@ -422,10 +476,11 @@ a session too, not just before ending it, to catch drift early.
 
 ## Budget
 
-With all 8 Fargate tasks running (steady state, no auto-scaling triggered), total cost
-is roughly $0.28-0.29/hr (Redis's 256 CPU / 512 MB task and the Mongo secondary's 512
-CPU / 1024 MB task - the same size as the primary - add to the base project's
-$0.15-0.16/hr): Fargate vCPU/GB-hour pricing dominates, the VPC endpoints and
-NLB add a small fixed idle cost, and SQS/CloudWatch stay effectively free at this demo's
+With all 9 Fargate tasks running (steady state, no auto-scaling triggered), total cost
+is roughly $0.38-0.40/hr (Redis's 256 CPU / 512 MB task and the Mongo secondary's and
+Postgres replica's 512 CPU / 1024 MB tasks - the same size as their respective primaries
+- add to the base project's $0.15-0.16/hr): Fargate vCPU/GB-hour pricing dominates, the
+VPC endpoints and NLB add a small fixed idle cost, and SQS/CloudWatch stay effectively
+free at this demo's
 message volume. Leaving it up overnight by accident is a few dollars, not a rounding
 error, so `terraform destroy` matters every session.

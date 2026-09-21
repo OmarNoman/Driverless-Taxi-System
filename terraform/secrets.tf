@@ -41,3 +41,35 @@ resource "aws_ssm_parameter" "postgres_url" {
     Name = "${var.project_name}-postgres-url"
   }
 }
+
+# 6.4HD - PostgreSQL read replica. repl_user's own credential (never used by the app
+# directly, only by pg_basebackup/streaming replication) and the read-only connection
+# string dispatch-service uses for availableCandidates(). The replica's "dtx" superuser
+# and its password come from pg_basebackup copying the primary's own data wholesale
+# (including pg_authid), so postgres_read_url reuses random_password.postgres.result
+# rather than needing a separate app-level credential.
+
+resource "random_password" "postgres_replication" {
+  length  = 24
+  special = false
+}
+
+resource "aws_ssm_parameter" "postgres_replication_password" {
+  name  = "/${var.project_name}/postgres/replication-password"
+  type  = "SecureString"
+  value = random_password.postgres_replication.result
+
+  tags = {
+    Name = "${var.project_name}-postgres-replication-password"
+  }
+}
+
+resource "aws_ssm_parameter" "postgres_read_url" {
+  name  = "/${var.project_name}/postgres/read-url"
+  type  = "SecureString"
+  value = "postgresql://dtx:${random_password.postgres.result}@${aws_lb.internal.dns_name}:5433/driverless_taxi"
+
+  tags = {
+    Name = "${var.project_name}-postgres-read-url"
+  }
+}

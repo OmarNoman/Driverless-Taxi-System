@@ -3,6 +3,10 @@
 // PostgreSQL holds the fleet roster + trip records (ACID, per the plan); MongoDB holds the
 // live vehicle positions written by the Telemetry service. A dispatch reads both, then
 // records the trip and flips the vehicle to on_trip in one transaction.
+//
+// 6.4HD: availableCandidates() - the only read-heavy path in the whole system - reads
+// from a separate Postgres read replica when PG_READ_URL is configured (AWS only);
+// assignTrip()'s writes always go to the primary.
 
 import pg from "pg";
 import { MongoClient } from "mongodb";
@@ -22,8 +26,12 @@ const CACHE_TTL_S = 3;
 // simplification, not a pattern that would survive a real fleet size.
 const MAX_CACHEABLE_SEATS = 7;
 
-export function createStore({ pgUrl, mongoUrl, mongoDb, mongoCollection = "telemetry", redisUrl }) {
+// 6.4HD: pgReadUrl is optional and defaults to pgUrl - zero env-var changes needed if
+// the read replica isn't deployed. A distinct readPool is only created when the two
+// URLs actually differ; assignTrip's UPDATE/INSERT always stay on the primary `pool`.
+export function createStore({ pgUrl, pgReadUrl = pgUrl, mongoUrl, mongoDb, mongoCollection = "telemetry", redisUrl }) {
   const pool = new Pool({ connectionString: pgUrl });
+  const readPool = pgReadUrl === pgUrl ? pool : new Pool({ connectionString: pgReadUrl });
   const mongo = new MongoClient(mongoUrl);
   const redis = new Redis(redisUrl);
   redis.on("error", (e) => console.error("[store] redis error:", e.message));
@@ -34,10 +42,12 @@ export function createStore({ pgUrl, mongoUrl, mongoDb, mongoCollection = "telem
       await mongo.connect();
       telemetry = mongo.db(mongoDb).collection(mongoCollection);
       await pool.query("SELECT 1");
+      if (readPool !== pool) await readPool.query("SELECT 1");
     },
 
     async close() {
       await pool.end();
+      if (readPool !== pool) await readPool.end();
       await mongo.close();
       redis.disconnect();
     },
@@ -61,7 +71,7 @@ export function createStore({ pgUrl, mongoUrl, mongoDb, mongoCollection = "telem
       }
       console.log(`[store] cache miss ${cacheKey}`);
 
-      const r = await pool.query(
+      const r = await readPool.query(
         `SELECT vehicle_id, vehicle_type, passenger_seats
            FROM vehicles
           WHERE status = 'available' AND passenger_seats >= $1`,

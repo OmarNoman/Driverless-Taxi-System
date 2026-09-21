@@ -61,6 +61,32 @@ resource "aws_lb_listener" "postgres" {
   }
 }
 
+# 6.4HD - PostgreSQL read replica. External port 5433, but the target group's own port
+# is still 5432 - the container port the replica's task actually registers on (ecs.tf),
+# same pattern as the Mongo secondary.
+resource "aws_lb_target_group" "postgres_replica" {
+  name        = "${var.project_name}-postgres-replica-tg"
+  port        = 5432
+  protocol    = "TCP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
+
+  tags = {
+    Name = "${var.project_name}-postgres-replica-tg"
+  }
+}
+
+resource "aws_lb_listener" "postgres_replica" {
+  load_balancer_arn = aws_lb.internal.arn
+  port              = 5433
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.postgres_replica.arn
+  }
+}
+
 resource "aws_lb_target_group" "mongo" {
   name        = "${var.project_name}-mongo-tg"
   port        = 27017

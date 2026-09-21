@@ -162,11 +162,16 @@ resource "aws_ecs_task_definition" "postgres" {
       environment = [
         { name = "POSTGRES_USER", value = "dtx" },
         { name = "POSTGRES_DB", value = "driverless_taxi" },
+        # 6.4HD - read replica. Must match the CIDR enable-replication.sh writes into
+        # pg_hba.conf.
+        { name = "REPL_CIDR", value = var.vpc_cidr },
       ]
       # Resolved by ECS from SSM Parameter Store at container start (secrets.tf) - the
-      # container still just sees a plain POSTGRES_PASSWORD env var, no image/app change.
+      # container still just sees plain POSTGRES_PASSWORD/REPL_PASSWORD env vars, no
+      # image/app change.
       secrets = [
         { name = "POSTGRES_PASSWORD", valueFrom = aws_ssm_parameter.postgres_password.arn },
+        { name = "REPL_PASSWORD", valueFrom = aws_ssm_parameter.postgres_replication_password.arn },
       ]
       logConfiguration = {
         logDriver = "awslogs"
@@ -210,6 +215,86 @@ resource "aws_ecs_service" "postgres" {
 
   tags = {
     Name = "${var.project_name}-postgres"
+  }
+}
+
+# --- Postgres read replica: real streaming replication, not a managed-service toggle
+# (6.4HD). Same SGs and container port (5432) as the primary - per the shared networking
+# fact, a second member listening on the primary's own container port needs no new
+# security-group rule, only a new NLB listener on a different external port (5433). No
+# manual init step needed (unlike the Mongo replica set): replica-entrypoint.sh runs
+# pg_basebackup automatically on every container start. ---
+
+resource "aws_cloudwatch_log_group" "postgres_replica" {
+  name              = "/ecs/${var.project_name}-postgres-replica"
+  retention_in_days = 1
+}
+
+resource "aws_ecs_task_definition" "postgres_replica" {
+  family                   = "${var.project_name}-postgres-replica"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "512"
+  memory                   = "1024"
+  execution_role_arn       = data.aws_iam_role.lab_role.arn
+  task_role_arn            = data.aws_iam_role.lab_role.arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name         = "postgres"
+      image        = "${aws_ecr_repository.postgres_seeded.repository_url}:week9-replica"
+      essential    = true
+      portMappings = [{ containerPort = 5432, protocol = "tcp" }]
+      environment = [
+        { name = "PRIMARY_HOST", value = aws_lb.internal.dns_name },
+      ]
+      secrets = [
+        { name = "REPL_PASSWORD", valueFrom = aws_ssm_parameter.postgres_replication_password.arn },
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.postgres_replica.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "postgres-replica"
+        }
+      }
+    }
+  ])
+
+  tags = {
+    Name = "${var.project_name}-postgres-replica"
+  }
+}
+
+resource "aws_ecs_service" "postgres_replica" {
+  name            = "${var.project_name}-postgres-replica"
+  cluster         = aws_ecs_cluster.dtx.id
+  task_definition = aws_ecs_task_definition.postgres_replica.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.private[*].id
+    security_groups  = [aws_security_group.database.id, aws_security_group.internal_services.id]
+    assign_public_ip = false
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.postgres_replica.arn
+    container_name   = "postgres"
+    container_port   = 5432
+  }
+
+  depends_on = [aws_lb_listener.postgres_replica]
+
+  tags = {
+    Name = "${var.project_name}-postgres-replica"
   }
 }
 
@@ -614,9 +699,11 @@ resource "aws_ecs_task_definition" "dispatch_service" {
         { name = "REDIS_URL", value = "redis://${aws_lb.internal.dns_name}:6379" },
       ]
       # Resolved by ECS from SSM Parameter Store at container start (secrets.tf) - the
-      # container still just sees a plain PG_URL env var, no application code change.
+      # container still just sees plain PG_URL/PG_READ_URL env vars, no application code
+      # change beyond store.js's optional pgReadUrl param (6.4HD).
       secrets = [
         { name = "PG_URL", valueFrom = aws_ssm_parameter.postgres_url.arn },
+        { name = "PG_READ_URL", valueFrom = aws_ssm_parameter.postgres_read_url.arn },
       ]
       logConfiguration = {
         logDriver = "awslogs"
