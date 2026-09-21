@@ -47,6 +47,11 @@ resource "aws_cloudwatch_log_group" "redis" {
   retention_in_days = 1
 }
 
+resource "aws_cloudwatch_log_group" "mongo_secondary" {
+  name              = "/ecs/${var.project_name}-mongo-secondary"
+  retention_in_days = 1
+}
+
 # --- Mosquitto: public subnet, pulls eclipse-mosquitto:2 straight from Docker Hub ---
 
 resource "aws_ecs_task_definition" "mosquitto" {
@@ -226,12 +231,24 @@ resource "aws_ecs_task_definition" "mongo" {
 
   container_definitions = jsonencode([
     {
-      name         = "mongo"
-      image        = "${aws_ecr_repository.mongo_seeded.repository_url}:week8"
-      essential    = true
+      name      = "mongo"
+      image     = "${aws_ecr_repository.mongo_seeded.repository_url}:week8"
+      essential = true
+      # 6.4HD - replica set member. --bind_ip_all is needed because mongod defaults to
+      # binding only 127.0.0.1 once --replSet is set.
+      command      = ["mongod", "--replSet", "dtxrs", "--bind_ip_all"]
       portMappings = [{ containerPort = 27017, protocol = "tcp" }]
       environment = [
         { name = "HISTORY_TTL_DAYS", value = "7" },
+        # SKIP_INIT=true - the official image's entrypoint runs init-telemetry.sh
+        # against a TEMPORARY bootstrap instance that still inherits --replSet, and a
+        # --replSet-configured node can never accept writes until rs.initiate() has run
+        # against it (confirmed by hitting this directly - it crash-loops otherwise,
+        # every restart, since Fargate's ephemeral storage means every primary restart
+        # starts from an empty data directory). This defers schema setup entirely;
+        # terraform/README.md's manual step re-runs the script afterwards as a one-off
+        # task once this node is actually primary.
+        { name = "SKIP_INIT", value = "true" },
       ]
       logConfiguration = {
         logDriver = "awslogs"
@@ -272,6 +289,77 @@ resource "aws_ecs_service" "mongo" {
 
   tags = {
     Name = "${var.project_name}-mongo"
+  }
+}
+
+# --- Mongo secondary: replica-set read scaling for `telemetry` (6.4HD) ---
+#
+# Same SGs and container port (27017) as the primary - per the shared networking fact,
+# a second member listening on the primary's own container port needs no new
+# security-group rule, only a new NLB listener on a different external port (27018)
+# forwarding to a target group whose targets still register on 27017. rs.initiate() is a
+# one-time manual admin action, not modelled here - see terraform/README.md.
+
+resource "aws_ecs_task_definition" "mongo_secondary" {
+  family                   = "${var.project_name}-mongo-secondary"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "512"
+  memory                   = "1024"
+  execution_role_arn       = data.aws_iam_role.lab_role.arn
+  task_role_arn            = data.aws_iam_role.lab_role.arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name         = "mongo"
+      image        = "${aws_ecr_repository.mongo_seeded.repository_url}:week9-secondary"
+      essential    = true
+      command      = ["mongod", "--replSet", "dtxrs", "--bind_ip_all"]
+      portMappings = [{ containerPort = 27017, protocol = "tcp" }]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.mongo_secondary.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "mongo-secondary"
+        }
+      }
+    }
+  ])
+
+  tags = {
+    Name = "${var.project_name}-mongo-secondary"
+  }
+}
+
+resource "aws_ecs_service" "mongo_secondary" {
+  name            = "${var.project_name}-mongo-secondary"
+  cluster         = aws_ecs_cluster.dtx.id
+  task_definition = aws_ecs_task_definition.mongo_secondary.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.private[*].id
+    security_groups  = [aws_security_group.database.id, aws_security_group.internal_services.id]
+    assign_public_ip = false
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.mongo_secondary.arn
+    container_name   = "mongo"
+    container_port   = 27017
+  }
+
+  depends_on = [aws_lb_listener.mongo_secondary]
+
+  tags = {
+    Name = "${var.project_name}-mongo-secondary"
   }
 }
 
@@ -517,7 +605,12 @@ resource "aws_ecs_task_definition" "dispatch_service" {
       environment = [
         { name = "HTTP_PORT", value = "8080" },
         { name = "MQTT_URL", value = "mqtt://${aws_lb.internal.dns_name}:1883" },
-        { name = "MONGO_URL", value = "mongodb://${aws_lb.internal.dns_name}:27017" },
+        # 6.4HD - replica-set aware. dispatch-service is the system's only Mongo reader
+        # (telemetry-service only writes, and writes always go to the primary regardless
+        # of readPreference, so its own MONGO_URL is left untouched); secondaryPreferred
+        # offloads availableCandidates()'s reads onto the secondary when it's healthy,
+        # falling back to the primary otherwise.
+        { name = "MONGO_URL", value = "mongodb://${aws_lb.internal.dns_name}:27017,${aws_lb.internal.dns_name}:27018/driverless_taxi?replicaSet=dtxrs&readPreference=secondaryPreferred" },
         { name = "REDIS_URL", value = "redis://${aws_lb.internal.dns_name}:6379" },
       ]
       # Resolved by ECS from SSM Parameter Store at container start (secrets.tf) - the

@@ -84,6 +84,33 @@ resource "aws_lb_listener" "mongo" {
   }
 }
 
+# 6.4HD - MongoDB replica-set secondary. External port 27018, but the target group's own
+# port is still 27017 - that's the container port the secondary's task actually
+# registers on (ecs.tf), per the shared networking fact that a same-port second member
+# needs no new security-group rule, only a new listener + target group.
+resource "aws_lb_target_group" "mongo_secondary" {
+  name        = "${var.project_name}-mongo-secondary-tg"
+  port        = 27017
+  protocol    = "TCP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
+
+  tags = {
+    Name = "${var.project_name}-mongo-secondary-tg"
+  }
+}
+
+resource "aws_lb_listener" "mongo_secondary" {
+  load_balancer_arn = aws_lb.internal.arn
+  port              = 27018
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.mongo_secondary.arn
+  }
+}
+
 resource "aws_lb_target_group" "mosquitto" {
   name        = "${var.project_name}-mosquitto-tg"
   port        = 1883

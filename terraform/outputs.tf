@@ -69,6 +69,14 @@ output "autoscaling_target_resource_ids" {
   }
 }
 
+output "mongo_replica_members" {
+  description = "6.4HD - the two host:port pairs to pass as rs.initiate()'s member identities (terraform/README.md). Must be the NLB's real routable addresses, since that's what dispatch-service's MONGO_URL and every other client reach Mongo through."
+  value = [
+    "${aws_lb.internal.dns_name}:27017",
+    "${aws_lb.internal.dns_name}:27018",
+  ]
+}
+
 output "cloudwatch_alarm_names" {
   description = "For aws cloudwatch describe-alarms verification and forcing a demo scale-out/in. Week 8c-iii."
   value = [

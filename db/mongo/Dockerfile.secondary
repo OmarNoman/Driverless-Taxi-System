@@ -1,0 +1,13 @@
+# syntax=docker/dockerfile:1
+#
+# 6.4HD - MongoDB replica-set secondary. Plain mongo:7, no COPY: a secondary syncs its
+# data from the primary via initial sync once rs.initiate() runs, it doesn't need
+# init-telemetry.sh (that only matters on first boot of an empty primary). Pushed to the
+# EXISTING dtx-mongo-seeded ECR repo, under a distinct tag so the same repo serves both
+# the primary and secondary images:
+#   docker build -f db/mongo/Dockerfile.secondary -t dtx-mongo-seeded:week9-secondary .
+#
+# --replSet dtxrs is passed as the ECS task's container command (terraform/ecs.tf), same
+# as the primary - this Dockerfile only needs to be a plain, otherwise-unmodified mongo:7.
+
+FROM mongo:7
