@@ -33,7 +33,14 @@ export function createStore({ pgUrl, pgReadUrl = pgUrl, mongoUrl, mongoDb, mongo
   const pool = new Pool({ connectionString: pgUrl });
   const readPool = pgReadUrl === pgUrl ? pool : new Pool({ connectionString: pgReadUrl });
   const mongo = new MongoClient(mongoUrl);
-  const redis = new Redis(redisUrl);
+  // enableOfflineQueue: false - ioredis's default queues commands while disconnected
+  // instead of rejecting them, so a genuine Redis outage would otherwise hang every
+  // availableCandidates() call for minutes (until maxRetriesPerRequest exhausts)
+  // instead of hitting the .catch(() => null) fallback below immediately. Found by
+  // hitting it directly: scaling dtx-redis to 0 stalled live requests rather than
+  // gracefully degrading to direct Postgres+Mongo reads, defeating the whole point of
+  // the cache-aside pattern's fallback.
+  const redis = new Redis(redisUrl, { enableOfflineQueue: false });
   redis.on("error", (e) => console.error("[store] redis error:", e.message));
   let telemetry;
 
