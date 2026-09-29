@@ -13,7 +13,7 @@
             },
             {
                 "name": "LOAD_TEST_BROKER_HOST",
-                "value": "44.202.77.49",
+                "value": "34.205.28.176",
                 "type": "str"
             }
         ]

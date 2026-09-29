@@ -70,3 +70,21 @@ resource "aws_vpc_endpoint" "sqs" {
     Name = "${var.project_name}-vpce-sqs"
   }
 }
+
+# Week 9 addition, same category of bug as the SQS endpoint above: the ECS agent needs
+# to reach SSM to resolve the `secrets` blocks on postgres/dispatch-service (Postgres
+# credential moved out of plaintext Terraform, see secrets.tf). Without this, those two
+# services sit stuck pending/stopped, unable to resolve POSTGRES_PASSWORD/PG_URL at
+# task startup, with no NAT Gateway to fall back on.
+resource "aws_vpc_endpoint" "ssm" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${var.aws_region}.ssm"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${var.project_name}-vpce-ssm"
+  }
+}
